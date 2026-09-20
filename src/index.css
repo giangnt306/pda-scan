@@ -1,0 +1,471 @@
+:root {
+  /* Nền xám lạnh, không phải trắng tinh - đỡ chói dưới đèn kho */
+  --bg: #e9ecf0;
+  --surface: #ffffff;
+  --ink: #131820;
+  --muted: #667085;
+  --line: #d3d8e0;
+  --line-strong: #aab2be;
+
+  --primary: #1b4fd8;
+  --primary-ink: #ffffff;
+
+  /* Ba trạng thái nguồn dữ liệu */
+  --src-manual: #aab2be;
+  --src-sure: #157f4a;
+  --src-doubt: #c77700;
+  --danger: #c02626;
+
+  --r: 6px;
+  --tap: 52px;
+
+  font-family: "Barlow", system-ui, sans-serif;
+  font-size: 16px;
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  overscroll-behavior-y: none;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+/* ---------- Khung app ---------- */
+.app {
+  max-width: 520px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--ink);
+  color: #fff;
+  padding: 12px 16px calc(12px + env(safe-area-inset-top)) 16px;
+  padding-top: calc(12px + env(safe-area-inset-top));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.topbar h1 {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.topbar .sub {
+  font-size: 13px;
+  color: #9aa4b2;
+  margin-top: 2px;
+}
+
+.counter {
+  text-align: right;
+  line-height: 1.1;
+}
+.counter b {
+  font-size: 22px;
+  font-weight: 700;
+}
+.counter span {
+  display: block;
+  font-size: 12px;
+  color: #9aa4b2;
+}
+
+.body {
+  flex: 1;
+  padding: 16px 16px 140px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---------- Vùng chụp nhãn ---------- */
+.capture {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+.viewfinder {
+  aspect-ratio: 4 / 3;
+  background: #f4f6f8;
+  position: relative;
+  display: grid;
+  place-items: center;
+  border-bottom: 1px solid var(--line);
+}
+
+/* Bốn góc ngắm - mượn từ khung ngắm máy quét */
+.viewfinder::before,
+.viewfinder::after,
+.corners::before,
+.corners::after {
+  content: "";
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--line-strong);
+}
+.viewfinder::before {
+  top: 18px;
+  left: 18px;
+  border-right: 0;
+  border-bottom: 0;
+}
+.viewfinder::after {
+  top: 18px;
+  right: 18px;
+  border-left: 0;
+  border-bottom: 0;
+}
+.corners::before {
+  bottom: 18px;
+  left: 18px;
+  border-right: 0;
+  border-top: 0;
+}
+.corners::after {
+  bottom: 18px;
+  right: 18px;
+  border-left: 0;
+  border-top: 0;
+}
+
+.viewfinder p {
+  color: var(--muted);
+  font-size: 15px;
+  text-align: center;
+  max-width: 220px;
+  line-height: 1.4;
+}
+
+.viewfinder img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.capture-actions {
+  display: flex;
+}
+
+.capture-actions button {
+  flex: 1;
+  min-height: var(--tap);
+  border: 0;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+}
+.capture-actions button + button {
+  border-left: 1px solid var(--line);
+}
+.capture-actions button:active {
+  background: #eef1f5;
+}
+.capture-actions button.primary {
+  background: var(--primary);
+  color: var(--primary-ink);
+}
+.capture-actions button:disabled {
+  color: var(--line-strong);
+  cursor: default;
+}
+
+/* ---------- Nhóm trường ---------- */
+.group > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.group h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.group .note {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.fields {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+/* ---------- Một trường ---------- */
+.field {
+  display: flex;
+  border-top: 1px solid var(--line);
+}
+.fields > .field:first-child {
+  border-top: 0;
+}
+
+/* Thanh nguồn dữ liệu bên trái */
+.field > .src {
+  flex: 0 0 4px;
+  background: var(--src-manual);
+}
+.field[data-src="sure"] > .src {
+  background: var(--src-sure);
+}
+.field[data-src="doubt"] > .src {
+  background: var(--src-doubt);
+}
+.field[data-invalid="true"] > .src {
+  background: var(--danger);
+}
+
+.field > .inner {
+  flex: 1;
+  padding: 10px 14px 12px 12px;
+  min-width: 0;
+}
+
+.field label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.field label .req {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.chip {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  line-height: 1.5;
+}
+.chip.sure {
+  color: var(--src-sure);
+}
+.chip.doubt {
+  color: var(--src-doubt);
+}
+.chip.edited {
+  color: var(--primary);
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 17px;
+  color: var(--ink);
+  padding: 2px 0;
+  min-height: 30px;
+}
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+.field input::placeholder,
+.field textarea::placeholder {
+  color: #aab2be;
+}
+.field textarea {
+  resize: vertical;
+  min-height: 56px;
+}
+
+.field .err {
+  font-size: 13px;
+  color: var(--danger);
+  margin-top: 4px;
+}
+
+/* Hai trường xếp cạnh nhau */
+.row {
+  display: flex;
+  border-top: 1px solid var(--line);
+}
+.fields > .row:first-child {
+  border-top: 0;
+}
+.row > .field {
+  flex: 1;
+  border-top: 0;
+  min-width: 0;
+}
+.row > .field + .field {
+  border-left: 1px solid var(--line);
+}
+
+/* ---------- Nút mở rộng phần tuỳ chọn ---------- */
+.toggle {
+  width: 100%;
+  min-height: var(--tap);
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--r);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.toggle:active {
+  background: #e2e6ec;
+}
+
+/* ---------- Thanh hành động dưới ---------- */
+.actionbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-width: 520px;
+  margin: 0 auto;
+  background: var(--surface);
+  border-top: 1px solid var(--line-strong);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom)) 16px;
+}
+
+.status {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.status.blocked {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.actionbar .buttons {
+  display: flex;
+  gap: 10px;
+}
+
+.btn {
+  min-height: var(--tap);
+  border-radius: var(--r);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0 18px;
+  cursor: pointer;
+}
+.btn:active {
+  background: #eef1f5;
+}
+.btn.confirm {
+  flex: 1;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-ink);
+}
+.btn.confirm:disabled {
+  background: #c9cfd8;
+  border-color: #c9cfd8;
+  color: #fff;
+  cursor: default;
+}
+
+/* ---------- Thông báo đã lưu ---------- */
+.toast {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: 96px;
+  max-width: 488px;
+  margin: 0 auto;
+  z-index: 30;
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--r);
+  padding: 14px 16px;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.toast .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3ad17e;
+  flex: 0 0 auto;
+}
+
+/* ---------- Chú thích màu ---------- */
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legend span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
