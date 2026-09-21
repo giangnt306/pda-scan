@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import ScannerSheet from "./ScannerSheet.jsx";
+import SavedList from "./SavedList.jsx";
 import { normalizeDate, normalizeCode, PART_NUMBER_RE, SA_NUMBER_RE } from "./lib/normalize.js";
 import { downscale, buildFilename, photoId, saveToDevice, shareFile } from "./lib/camera.js";
 
@@ -84,6 +85,23 @@ const FAKE_AI = {
 };
 
 const SURE_THRESHOLD = 0.9;
+
+// ponytail: localStorage ~5 MB, đủ vài trăm nhãn kèm ảnh nhỏ; chuyển sang backend ở bước 4.
+const STORE_KEY = "pda-scan.records";
+const loadRecords = () => {
+  try {
+    return JSON.parse(localStorage.getItem(STORE_KEY)) || [];
+  } catch {
+    return [];
+  }
+};
+
+const toDataUrl = (blob) =>
+  new Promise((res) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.readAsDataURL(blob);
+  });
 const DATE_KEYS = new Set(["shipmentDate"]);
 
 /* ------------------------------------------------------------------ */
@@ -192,7 +210,8 @@ export default function App() {
   const [photo, setPhoto] = useState(null);
   const [showOptional, setShowOptional] = useState(false);
   const [touched, setTouched] = useState(false);
-  const [saved, setSaved] = useState(0);
+  const [records, setRecords] = useState(loadRecords);
+  const [view, setView] = useState("form");
   const [toast, setToast] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const [reading, setReading] = useState(false);
@@ -300,14 +319,23 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }
 
-  function confirm() {
+  async function confirm() {
     setTouched(true);
     if (blocking || Object.keys(errors).length) return;
-    console.log("Xác nhận:", { values, metas, ...systemValues, photo: photo?.blob });
-    setSaved((n) => n + 1);
-    setToast(`Đã lưu ${values.partNumber}`);
+    const thumb = photo ? await toDataUrl((await downscale(photo.blob, 240, 0.7)).blob) : "";
+    const record = { ...values, ...systemValues, thumb, savedAt: new Date().toISOString() };
+    const next = [record, ...records];
+    setRecords(next);
+    let msg = `Đã lưu ${values.partNumber}`;
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    } catch {
+      msg = "Bộ nhớ máy đầy — nhãn chỉ còn đến khi tải lại trang";
+    }
+    setToast(msg);
     setTimeout(() => setToast(""), 2600);
     reset();
+    setView("list");
   }
 
   const filled = REQUIRED_FIELDS.length - blocking;
@@ -317,156 +345,162 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div>
-          <h1>Nhập kho linh kiện</h1>
+          <h1>{view === "list" ? "Nhãn đã lưu" : "Nhập kho linh kiện"}</h1>
           <div className="sub">Kho Long Biên · Ca sáng</div>
         </div>
-        <div className="counter">
-          <b>{saved}</b>
+        <button className="counter" onClick={() => setView("list")}>
+          <b>{records.length}</b>
           <span>đã lưu</span>
-        </div>
+        </button>
       </header>
 
-      <main className="body">
-        <section className="capture">
-          <div className="viewfinder">
-            <div className="corners" aria-hidden="true" />
-            {photo ? (
-              <img src={photo.url} alt="Ảnh nhãn vừa chụp" />
+      {view === "list" ? (
+        <SavedList records={records} onBack={() => setView("form")} />
+      ) : (
+          <>
+          <main className="body">
+            <section className="capture">
+              <div className="viewfinder">
+                <div className="corners" aria-hidden="true" />
+                {photo ? (
+                  <img src={photo.url} alt="Ảnh nhãn vừa chụp" />
+                ) : (
+                  <p>Mở camera để chụp nhãn</p>
+                )}
+                {reading && <div className="reading">Đang đọc nhãn…</div>}
+              </div>
+              <div className="capture-actions">
+                <button className="primary" onClick={() => setCameraOpen(true)}>
+                  {photo ? "Chụp lại" : "Mở camera"}
+                </button>
+              </div>
+            </section>
+
+            <section className="testbench">
+              <label className="check">
+                <input type="checkbox" checked={autoSave} onChange={(e) => setAutoSave(e.target.checked)} />
+                Tự lưu ảnh gốc vào máy sau khi chụp
+              </label>
+
+              {photo?.original && (
+                <dl className="shotinfo">
+                  <div>
+                    <dt>Ảnh gốc</dt>
+                    <dd className="mono">
+                      {photo.original.width}×{photo.original.height} · {fmtKB(photo.original.bytes)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Thời gian chụp</dt>
+                    <dd className="mono">{photo.original.ms} ms</dd>
+                  </div>
+                  <div>
+                    <dt>Bản gửi OCR</dt>
+                    <dd className="mono">
+                      {photo.width}×{photo.height} · {fmtKB(photo.blob.size)}
+                    </dd>
+                  </div>
+                  <div className="full">
+                    <dt>Tên file</dt>
+                    <dd className="mono small">{photo.original.filename}</dd>
+                  </div>
+                  <div className="actions">
+                    <button className="btn small" onClick={() => saveToDevice(photo.original.blob, photo.original.filename)}>
+                      Tải lại ảnh gốc
+                    </button>
+                    <button
+                      className="btn small"
+                      onClick={async () => {
+                        const ok = await shareFile(photo.original.blob, photo.original.filename);
+                        if (!ok) {
+                          setToast("Máy không hỗ trợ chia sẻ file — dùng Tải lại ảnh gốc");
+                          setTimeout(() => setToast(""), 2600);
+                        }
+                      }}
+                    >
+                      Lưu vào Thư viện ảnh
+                    </button>
+                  </div>
+                </dl>
+              )}
+            </section>
+
+            <div className="legend">
+              <span>
+                <i style={{ background: "var(--src-manual)" }} /> Người nhập
+              </span>
+              <span>
+                <i style={{ background: "var(--src-sure)" }} /> Máy đọc chắc chắn
+              </span>
+              <span>
+                <i style={{ background: "var(--src-doubt)" }} /> Cần kiểm tra
+              </span>
+            </div>
+
+            <section className="group">
+              <header>
+                <h2>Thông tin ảnh</h2>
+                <span className="note">tự động</span>
+              </header>
+              <FieldList fields={SYSTEM_FIELDS} values={systemValues} metas={{}} errors={{}} onChange={() => {}} />
+            </section>
+
+            <section className="group">
+              <header>
+                <h2>Thông tin bắt buộc</h2>
+                <span className="note">
+                  {filled}/{REQUIRED_FIELDS.length} trường
+                </span>
+              </header>
+              <FieldList
+                fields={REQUIRED_FIELDS}
+                values={values}
+                metas={metas}
+                errors={touched ? errors : {}}
+                onChange={handleChange}
+              />
+            </section>
+
+            {showOptional ? (
+              <section className="group">
+                <header>
+                  <h2>Thông tin bổ sung</h2>
+                  <span className="note">không bắt buộc</span>
+                </header>
+                <FieldList
+                  fields={OPTIONAL_FIELDS}
+                  values={values}
+                  metas={metas}
+                  errors={touched ? errors : {}}
+                  onChange={handleChange}
+                />
+              </section>
             ) : (
-              <p>Mở camera để chụp nhãn</p>
+              <button className="toggle" onClick={() => setShowOptional(true)}>
+                Thêm thông tin bổ sung ({OPTIONAL_FIELDS.length} trường)
+              </button>
             )}
-            {reading && <div className="reading">Đang đọc nhãn…</div>}
+          </main>
+
+          <div className="actionbar">
+            <div className={`status${touched && blocking ? " blocked" : ""}`}>
+              {blocking
+                ? `Còn ${blocking} trường bắt buộc chưa đạt`
+                : doubtful
+                ? `Đủ dữ liệu · ${doubtful} trường nên kiểm tra lại`
+                : "Đủ dữ liệu, sẵn sàng lưu"}
+            </div>
+            <div className="buttons">
+              <button className="btn" onClick={reset}>
+                Xoá
+              </button>
+              <button className="btn confirm" onClick={confirm} disabled={touched && blocking > 0}>
+                Xác nhận và lưu
+              </button>
+            </div>
           </div>
-          <div className="capture-actions">
-            <button className="primary" onClick={() => setCameraOpen(true)}>
-              {photo ? "Chụp lại" : "Mở camera"}
-            </button>
-          </div>
-        </section>
-
-        <section className="testbench">
-          <label className="check">
-            <input type="checkbox" checked={autoSave} onChange={(e) => setAutoSave(e.target.checked)} />
-            Tự lưu ảnh gốc vào máy sau khi chụp
-          </label>
-
-          {photo?.original && (
-            <dl className="shotinfo">
-              <div>
-                <dt>Ảnh gốc</dt>
-                <dd className="mono">
-                  {photo.original.width}×{photo.original.height} · {fmtKB(photo.original.bytes)}
-                </dd>
-              </div>
-              <div>
-                <dt>Thời gian chụp</dt>
-                <dd className="mono">{photo.original.ms} ms</dd>
-              </div>
-              <div>
-                <dt>Bản gửi OCR</dt>
-                <dd className="mono">
-                  {photo.width}×{photo.height} · {fmtKB(photo.blob.size)}
-                </dd>
-              </div>
-              <div className="full">
-                <dt>Tên file</dt>
-                <dd className="mono small">{photo.original.filename}</dd>
-              </div>
-              <div className="actions">
-                <button className="btn small" onClick={() => saveToDevice(photo.original.blob, photo.original.filename)}>
-                  Tải lại ảnh gốc
-                </button>
-                <button
-                  className="btn small"
-                  onClick={async () => {
-                    const ok = await shareFile(photo.original.blob, photo.original.filename);
-                    if (!ok) {
-                      setToast("Máy không hỗ trợ chia sẻ file — dùng Tải lại ảnh gốc");
-                      setTimeout(() => setToast(""), 2600);
-                    }
-                  }}
-                >
-                  Lưu vào Thư viện ảnh
-                </button>
-              </div>
-            </dl>
-          )}
-        </section>
-
-        <div className="legend">
-          <span>
-            <i style={{ background: "var(--src-manual)" }} /> Người nhập
-          </span>
-          <span>
-            <i style={{ background: "var(--src-sure)" }} /> Máy đọc chắc chắn
-          </span>
-          <span>
-            <i style={{ background: "var(--src-doubt)" }} /> Cần kiểm tra
-          </span>
-        </div>
-
-        <section className="group">
-          <header>
-            <h2>Thông tin ảnh</h2>
-            <span className="note">tự động</span>
-          </header>
-          <FieldList fields={SYSTEM_FIELDS} values={systemValues} metas={{}} errors={{}} onChange={() => {}} />
-        </section>
-
-        <section className="group">
-          <header>
-            <h2>Thông tin bắt buộc</h2>
-            <span className="note">
-              {filled}/{REQUIRED_FIELDS.length} trường
-            </span>
-          </header>
-          <FieldList
-            fields={REQUIRED_FIELDS}
-            values={values}
-            metas={metas}
-            errors={touched ? errors : {}}
-            onChange={handleChange}
-          />
-        </section>
-
-        {showOptional ? (
-          <section className="group">
-            <header>
-              <h2>Thông tin bổ sung</h2>
-              <span className="note">không bắt buộc</span>
-            </header>
-            <FieldList
-              fields={OPTIONAL_FIELDS}
-              values={values}
-              metas={metas}
-              errors={touched ? errors : {}}
-              onChange={handleChange}
-            />
-          </section>
-        ) : (
-          <button className="toggle" onClick={() => setShowOptional(true)}>
-            Thêm thông tin bổ sung ({OPTIONAL_FIELDS.length} trường)
-          </button>
-        )}
-      </main>
-
-      <div className="actionbar">
-        <div className={`status${touched && blocking ? " blocked" : ""}`}>
-          {blocking
-            ? `Còn ${blocking} trường bắt buộc chưa đạt`
-            : doubtful
-            ? `Đủ dữ liệu · ${doubtful} trường nên kiểm tra lại`
-            : "Đủ dữ liệu, sẵn sàng lưu"}
-        </div>
-        <div className="buttons">
-          <button className="btn" onClick={reset}>
-            Xoá
-          </button>
-          <button className="btn confirm" onClick={confirm} disabled={touched && blocking > 0}>
-            Xác nhận và lưu
-          </button>
-        </div>
-      </div>
+          </>
+      )}
 
       {toast && (
         <div className="toast" role="status">
