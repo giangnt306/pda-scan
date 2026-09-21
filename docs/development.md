@@ -31,7 +31,7 @@ The `dev` script also passes `--host`, which is redundant but harmless.
 The configuration additionally registers `@vitejs/plugin-basic-ssl`, so the dev
 server is served over HTTPS with a self-signed certificate. This is not
 optional: `getUserMedia` is only available in a secure context, and a plain HTTP
-LAN address is not one. Without it the scanner fails immediately with the
+LAN address is not one. Without it the camera sheet fails immediately with the
 `SecurityError` branch of `ERROR_TEXT`.
 
 The consequence is a certificate warning on first visit from each device.
@@ -57,8 +57,8 @@ certificate and needs neither the flag nor the plugin.
 ## Testing on a physical device
 
 The application targets handheld use and should be exercised on a real device
-rather than in a desktop browser's device emulation. Camera behaviour, barcode
-decoding performance, torch availability, and haptic feedback all differ.
+rather than in a desktop browser's device emulation. Camera behaviour, still-photo
+resolution and latency, torch availability, and haptic feedback all differ.
 
 1. Connect the development machine and the handset to the same network.
 2. Run `npm run dev`.
@@ -66,29 +66,6 @@ decoding performance, torch availability, and haptic feedback all differ.
    address recorded from an earlier session; DHCP may have reassigned it.
 4. Accept the certificate warning as described above.
 5. Grant the camera permission when Chrome prompts.
-
-### Barcode engine
-
-The engine is selected at runtime by `src/lib/barcode.js`:
-
-| Platform                    | Engine                                | Notes                                          |
-| --------------------------- | ------------------------------------- | ---------------------------------------------- |
-| Chrome on Android (PDA, phone) | Native `BarcodeDetector`           | Backed by Google Play Services; no extra download |
-| Chrome on Windows or Linux  | `barcode-detector` WebAssembly ponyfill | Loaded on demand; fetches its `.wasm` from a CDN |
-
-While the ponyfill is in use, the hint under the viewfinder reads "đang dùng bộ
-giải mã dự phòng". That line is the reliable indicator that testing is happening
-on a laptop rather than on a target device. Decoding through the ponyfill is
-noticeably slower, so scanning latency measured on a laptop says nothing about
-the device.
-
-The ponyfill downloads its WebAssembly payload from jsDelivr and therefore
-requires internet access. Android devices using the native engine do not.
-
-`WANTED_FORMATS` in `src/lib/barcode.js` currently enables QR, Code 128,
-Code 39, EAN-13, EAN-8, UPC-A, UPC-E, ITF, and DataMatrix. Narrowing this array
-to the symbologies actually in use in a given warehouse makes decoding both
-faster and less prone to misreads, and is worth doing before any field trial.
 
 ### Camera failure modes
 
@@ -106,6 +83,27 @@ the failure paths:
 A denied permission is remembered per origin. Recovering requires the lock icon
 in the address bar rather than a reload, which is why that instruction is in the
 error text.
+
+### Label capture
+
+Photos are taken only through the ImageCapture API. Chrome for Android supports
+it; Firefox and Safari do not. Where it is missing, the sheet subtitle reads
+"Trình duyệt không hỗ trợ ImageCapture — không chụp được nhãn" and the shutter
+is hidden; fields can still be filled in by hand.
+
+When checking capture on a device:
+
+- The sheet subtitle shows the maximum photo size the sensor offers, for example
+  `ImageCapture · tối đa 4000×3000`. The photo panel below the viewfinder shows
+  the size, file size, and capture time actually obtained.
+- With "Tự lưu ảnh gốc vào máy" ticked, each photo is downloaded as
+  `pda_<width>x<height>_<timestamp>.jpg`. From the second download Chrome may ask
+  once to allow multiple downloads.
+- "Lưu vào Thư viện ảnh" opens the Android share sheet; desktop browsers without
+  file sharing show a toast instead.
+
+A rejected `takePhoto()` is shown as an error above the shutter; there is no
+silent fallback to a video frame.
 
 ### Torch
 

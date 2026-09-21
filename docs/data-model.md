@@ -12,8 +12,7 @@ supplier set widens, they will need revisiting.
 ## Field descriptors
 
 Form structure is data-driven. Each field is described by a plain object, and
-the rendering components derive controls, layout, typography, scan buttons, and
-validation from those descriptors. Adding or removing a field requires editing
+the rendering components derive controls, layout, typography, and validation from those descriptors. Adding or removing a field requires editing
 only the descriptor arrays; no JSX changes are necessary.
 
 ### Descriptor properties
@@ -26,7 +25,6 @@ only the descriptor arrays; no JSX changes are necessary.
 | `options`       | string[]               | Permitted values; required when `type` is `select`              |
 | `mono`          | boolean                | Renders the control in the monospace face                       |
 | `half`          | boolean                | Field may share a horizontal row with the next `half` field     |
-| `scannable`     | boolean                | Renders a scan button that opens the camera bound to this field |
 | `placeholder`   | string                 | Placeholder text                                                |
 | `validate`      | (string) => string     | Returns an error message, or `""` when the value is acceptable  |
 
@@ -35,31 +33,31 @@ non-empty, so emptiness and malformation never produce two messages at once.
 
 ### Mandatory fields
 
-Declared in `REQUIRED_FIELDS` (line 16). All six must be populated, and must
+Declared in `REQUIRED_FIELDS` (line 19). All six must be populated, and must
 satisfy their `validate` function, before a record may be confirmed.
 
 | `key`          | Label            | Type   | Notes                                                     |
 | -------------- | ---------------- | ------ | --------------------------------------------------------- |
-| `partNumber`   | Part Number      | text   | Monospace, scannable, checked against `PART_NUMBER_RE`    |
+| `partNumber`   | Part Number      | text   | Monospace, checked against `PART_NUMBER_RE`              |
 | `partName`     | Tên linh kiện    | text   | Free text, e.g. `WINDSCREEN_L2`                           |
 | `quantity`     | Số lượng         | number | Numeric keypad; must exceed zero                          |
 | `shipmentDate` | Ngày xuất hàng   | date   | Normalised from label text by `normalizeDate`             |
-| `supplier`     | Nhà cung cấp     | select | Options from `SUPPLIERS` (line 10)                        |
-| `location`     | Vị trí lưu kho   | text   | Monospace, scannable; the shelf position, e.g. `A-03-02`  |
+| `supplier`     | Nhà cung cấp     | select | Options from `SUPPLIERS` (line 13)                        |
+| `location`     | Vị trí lưu kho   | text   | Monospace; the shelf position, e.g. `A-03-02`            |
 
 `location` is the one mandatory field that does not come from the label. It is
-the operator's decision about where the goods are being put, and it is scannable
-because shelf labels carry barcodes.
+the operator's decision about where the goods are being put, and is entered by
+hand.
 
 ### Optional fields
 
-Declared in `OPTIONAL_FIELDS` (line 39). These are collapsed behind a toggle
+Declared in `OPTIONAL_FIELDS` (line 40). These are collapsed behind a toggle
 until the operator expands them, or until recognition completes, at which point
 `applyAiResult` expands the section automatically.
 
 | `key`         | Label                | Type     | Notes                                               |
 | ------------- | -------------------- | -------- | --------------------------------------------------- |
-| `batch`       | Batch                | text     | Monospace, scannable, e.g. `260917_79F`             |
+| `batch`       | Batch                | text     | Monospace, e.g. `260917_79F`                        |
 | `saNumber`    | SA Number            | text     | Monospace, checked against `SA_NUMBER_RE`           |
 | `variant`     | Phiên bản / Màu      | text     | Model and colour, e.g. `VF8 NP`, `Limo Green`       |
 | `plantDock`   | Plant / Dock         | text     | Monospace, e.g. `3001/1001`                         |
@@ -67,8 +65,8 @@ until the operator expands them, or until recognition completes, at which point
 | `packaging`   | Tình trạng bao bì    | select   | Four condition values                               |
 | `note`        | Ghi chú              | textarea | Free text                                           |
 
-`ALL_FIELDS` (line 61) concatenates both arrays and is used by `emptyValues`
-(line 62) to construct the initial state, in which every field is an empty
+`ALL_FIELDS` (line 62) concatenates both arrays and is used by `emptyValues`
+(line 63) to construct the initial state, in which every field is an empty
 string. No field is pre-filled: unlike the earlier schema there is no receipt
 date defaulting to today, because `shipmentDate` is a property of the shipment
 and belongs to the label rather than to the moment of entry.
@@ -76,8 +74,7 @@ and belongs to the label rather than to the moment of entry.
 ## Normalisation
 
 `src/lib/normalize.js` converts raw label text into the forms the controls
-expect. It runs on both input paths — decoded barcodes and recognition results —
-before the value reaches `values`.
+expect. It runs on recognition results before the value reaches `values`.
 
 ### Dates
 
@@ -129,9 +126,8 @@ the check.
 
 ## Provenance model
 
-The application distinguishes data the operator entered, data decoded from a
-barcode, and data proposed by the recognition service, and further distinguishes
-high-confidence proposals from those requiring review.
+The application distinguishes data the operator entered from data proposed by
+the recognition service, and further distinguishes high-confidence proposals from those requiring review.
 
 ### Structure
 
@@ -140,7 +136,7 @@ Two parallel state objects are keyed identically by field `key`:
 ```js
 values = { partNumber: "BEX32181030AB", quantity: "80", ... }
 
-metas  = { partNumber: { src: "sure",  via: "scan", confidence: 1,    edited: false },
+metas  = { partNumber: { src: "sure",  via: "ai", confidence: 0.94, edited: false },
            shipmentDate: { src: "doubt", via: "ai", confidence: 0.62, edited: false }, ... }
 ```
 
@@ -149,8 +145,8 @@ A field absent from `metas` is treated as manually entered.
 | Property     | Meaning                                                              |
 | ------------ | -------------------------------------------------------------------- |
 | `src`        | `sure` or `doubt`; drives the indicator colour                       |
-| `via`        | `scan` for a decoded barcode, `ai` for a recognition proposal        |
-| `confidence` | 0 to 1; always 1 for a decoded barcode                               |
+| `via`        | `ai` for a recognition proposal                                      |
+| `confidence` | 0 to 1, as reported by the service                                   |
 | `edited`     | Whether the operator has since modified the value                    |
 
 ### States
@@ -158,27 +154,18 @@ A field absent from `metas` is treated as manually entered.
 | State    | Condition                                   | Presentation                                          |
 | -------- | ------------------------------------------- | ----------------------------------------------------- |
 | `manual` | No metadata entry                           | Grey indicator, no badge                              |
-| scanned  | `via: "scan"`                               | Green indicator, badge reading "đã quét"              |
 | `sure`   | `via: "ai"`, `confidence >= SURE_THRESHOLD` | Green indicator, badge reading "AI" with a percentage |
 | `doubt`  | `via: "ai"`, `confidence < SURE_THRESHOLD`  | Amber indicator, badge reading "Kiểm tra lại" with a percentage |
 | `edited` | Operator modified any of the above          | Grey indicator, badge reading "đã sửa"                |
 
-`SURE_THRESHOLD` is defined at line 76 and is currently `0.9`. This constant is
+`SURE_THRESHOLD` is defined at line 77 and is currently `0.9`. This constant is
 the single tuning point governing how much recognised data the operator is asked
 to verify. It should be calibrated against measured recognition accuracy once
 the real service is integrated, not left at the prototype value by default.
 
-### Barcode precedence
-
-`applyAiResult` (line 260) skips any field whose metadata records
-`via: "scan"`. A decoded barcode is exact; a recognition result is a proposal.
-Allowing the model to overwrite a scan would ask the operator to notice and undo
-a regression in data quality, which is exactly the kind of vigilance the
-provenance model exists to avoid needing.
-
 ### Confidence downgrade on failed normalisation
 
-Also in `applyAiResult`: when normalisation returns the empty string — an
+In `applyAiResult` (line 230): when normalisation returns the empty string — an
 unrecognised date format, for instance — the field is stored with `src: "doubt"`
 and `confidence: 0` regardless of what the service reported. The model may have
 been entirely confident about a string that the application could not interpret,
@@ -186,38 +173,20 @@ and that combination is precisely when a human should look.
 
 ### Edit tracking
 
-`handleChange` (line 237) writes the new value and, if the field carries
+`handleChange` (line 216) writes the new value and, if the field carries
 metadata, sets `edited: true` on it. The original `confidence` and `via` are
 retained. A recognised value that the operator has corrected therefore ceases to
 display as machine-derived, while the audit trail distinguishing proposed data
 from corrected data is preserved for the eventual submission payload.
 
-The derived counter `doubtful` (line 235) reports how many recognised fields
+The derived counter `doubtful` (line 214) reports how many recognised fields
 remain below the threshold and unedited. It is surfaced in the action bar so
 that the operator is informed of outstanding review items even when the form is
 formally complete.
 
-## Barcode input
-
-`handleBarcode` (line 242) receives a field key and a decoded value from the
-scanner sheet. It normalises the value with `normalizeCode`, writes it, records
-`{ src: "sure", via: "scan", confidence: 1 }`, shows a toast, and closes the
-sheet.
-
-When the key is `null` — the free-scanning case, where the sheet was opened from
-the capture panel rather than from a field's scan button — the value is written
-to `partNumber`. That field is the one the operator scans in the overwhelming
-majority of cases, and it is also the only barcode on the sample labels whose
-format is checked, so a mis-routed value is caught by validation rather than
-silently accepted.
-
-Note that this default is a guess about operator intent. If labels appear that
-carry several barcodes of equal importance, routing should be driven by matching
-the decoded value against the format patterns instead.
-
 ## Validation
 
-`errors` is derived from `values` through `useMemo` (line 212) and is never
+`errors` is derived from `values` through `useMemo` (line 191) and is never
 stored as state.
 
 | Scope     | Rule                                                        | Message                                            |
@@ -237,7 +206,7 @@ but passed to the field components only after the operator has attempted
 confirmation, so an empty form is not marked as erroneous before any input has
 been given.
 
-`confirm` (line 302) sets `touched` and then aborts if either any mandatory
+`confirm` (line 291) sets `touched` and then aborts if either any mandatory
 field is unsatisfied or any error at all is present — including an error on an
 optional field. The confirm button's `disabled` state, by contrast, reflects
 only the mandatory count. An optional field in error therefore leaves the button
@@ -246,7 +215,7 @@ field. This is a known rough edge; see [roadmap.md](roadmap.md).
 
 ## Recognition payload
 
-`FAKE_AI` (line 66) stands in for the recognition service response and defines
+`FAKE_AI` (line 67) stands in for the recognition service response and defines
 the contract the real service is expected to satisfy:
 
 ```js
@@ -286,10 +255,14 @@ body for the persistence endpoint:
 ```
 
 Transmitting `metas` alongside `values` preserves the provenance record: which
-fields were scanned, which the service proposed and at what confidence, and
-which the operator corrected. This information supports later measurement of
+fields the service proposed and at what confidence, and which the operator
+corrected. This information supports later measurement of
 recognition accuracy in production and should not be discarded when the endpoint
 is implemented.
 
-The captured frame is included so that a disputed record can be checked against
-the label it came from. It is the JPEG produced by `grabFrame`, roughly 150 KB.
+The captured photo is included so that a disputed record can be checked against
+the label it came from. `photo.blob` is the downscaled JPEG (1280 px long edge,
+quality 0.82, roughly 150 KB) that is also sent for recognition. The
+full-resolution original taken by `ImageCapture.takePhoto()` is held in
+`photo.original.blob`; whether the backend should receive the original instead
+is an open question, see [image-capture.md](image-capture.md).

@@ -3,38 +3,34 @@
 ## Purpose
 
 `pda-scan` is a mobile-first web application for warehouse goods receipt. An
-operator opens a live camera, scans the barcodes on a part label or photographs
-the label whole, and reviews, corrects, and confirms the resulting record before
-it is persisted.
+operator opens a live camera, photographs a part label, and reviews, corrects,
+and confirms the resulting record before it is persisted.
 
-The application is currently a functional prototype. The user interface, the
-barcode scanner, and the review workflow are complete; the image-recognition
-service and the persistence backend are not yet implemented and are represented
+The application is currently a functional prototype. The user interface, label
+capture, and the review workflow are complete; the image-recognition service
+and the persistence backend are not yet implemented and are represented
 by local stubs.
 
 ## Technology stack
 
-| Component                   | Version | Role                                            |
-| --------------------------- | ------- | ----------------------------------------------- |
-| Vite                        | 5.4     | Development server and production bundler       |
-| React                       | 18.3    | User interface library                          |
-| `@vitejs/plugin-react`      | 4.7     | JSX transformation and Fast Refresh             |
-| `@vitejs/plugin-basic-ssl`  | 1.2     | Self-signed certificate for the dev server      |
-| `barcode-detector`          | 3.2     | WebAssembly ponyfill for the BarcodeDetector API |
+| Component                    | Version | Role                                       |
+| ---------------------------- | ------- | ------------------------------------------ |
+| Vite                         | 5.4     | Development server and production bundler  |
+| React                        | 18.3    | User interface library                     |
+| `@vitejs/plugin-react`     | 4.7     | JSX transformation and Fast Refresh        |
+| `@vitejs/plugin-basic-ssl` | 1.2     | Self-signed certificate for the dev server |
 
-Beyond React and the barcode ponyfill the project carries no runtime
-dependencies. There is no router, no external state-management library, no
-component library, and no CSS framework. TypeScript is not used. Styling is
-hand-authored CSS.
+Beyond React the project carries no runtime dependencies. There is no router,
+no external state-management library, no component library, and no CSS framework.
+TypeScript is not used. Styling is hand-authored CSS.
 
 This minimalism is a design decision rather than an omission. The application
 consists of one screen, one form, one camera sheet, and no client-side
 navigation; none of the libraries listed above would earn their maintenance cost
 at the present scope.
 
-The one dependency that was added, `barcode-detector`, exists because the
-platform API it ponyfills is absent on desktop Chrome. It is dynamically
-imported, so devices that provide the native API never download it.
+Barcode scanning is not implemented. Field values come from label capture and
+recognition, or from manual entry.
 
 ## Source layout
 
@@ -43,17 +39,15 @@ index.html            Vite entry point; document shell, viewport, font loading
 vite.config.js        HTTPS dev server, host binding, plugin registration
 src/main.jsx          React root mount
 src/App.jsx           Field schema, form components, application state
-src/ScannerSheet.jsx  Full-screen camera sheet: live scan and label capture
-src/lib/barcode.js    Barcode engine selection (native or ponyfill)
-src/lib/camera.js     getUserMedia, torch, frame grab, haptics
+src/ScannerSheet.jsx  Full-screen camera sheet: live preview and label capture
+src/lib/camera.js     getUserMedia, torch, ImageCapture photo, save/share, haptics
 src/lib/normalize.js  Date and code normalisation, label format patterns
 src/index.css         Design tokens and all component styling
 docs/                 This documentation
 ```
 
-Line counts as of this document: `App.jsx` 431, `index.css` 688,
-`ScannerSheet.jsx` 186, `camera.js` 74, `barcode.js` 60, `normalize.js` 57,
-`main.jsx` 10.
+Line counts as of this document: `App.jsx` 462, `index.css` 732,
+`ScannerSheet.jsx` 147, `camera.js` 167, `normalize.js` 57, `main.jsx` 10.
 
 ## Module responsibilities
 
@@ -83,7 +77,7 @@ application in `StrictMode`. `StrictMode` is a development-only construct: it
 double-invokes renders and effect cycles in order to surface impure side
 effects, and is eliminated from production builds.
 
-Note that the scanner's camera effect is written to tolerate this
+Note that the camera sheet's effect is written to tolerate this
 double-invocation; see the teardown discussion under `ScannerSheet.jsx`.
 
 ### `src/App.jsx`
@@ -91,46 +85,31 @@ double-invocation; see the teardown discussion under `ScannerSheet.jsx`.
 The form half of the application: the field schema, the components that render
 it, and all shared state.
 
-`Field` (line 81) renders one form control. It selects the control type from the
-field descriptor, applies the provenance attribute used for styling, renders the
-provenance badge and validation message, and — for descriptors marked
-`scannable` — renders the scan button that opens the camera bound to that field.
+`Field` (line 82) renders one form control. It selects the control type from the
+field descriptor, applies the provenance attribute used for styling, and renders
+the provenance badge and validation message.
 
-`FieldList` (line 163) walks a field array and groups consecutive descriptors
+`FieldList` (line 142) walks a field array and groups consecutive descriptors
 marked `half` into a single horizontal row.
 
-`App` (line 201) holds all application state and composes the screen: capture
-panel, provenance legend, mandatory field group, optional field group, action
-bar, transient toast, and the scanner sheet when open.
+`App` (line 179) holds all application state and composes the screen: capture
+panel, photo information panel, provenance legend, mandatory field group,
+optional field group, action bar, transient toast, and the camera sheet when
+open.
 
 ### `src/ScannerSheet.jsx`
 
-A full-screen camera sheet, mounted only while `scanner` state is non-null. It
-serves two purposes from one camera stream:
+A full-screen camera sheet, mounted only while `cameraOpen` state is true. It
+shows the live camera as a viewfinder with a framing window and a shutter
+button. The shutter takes a still photo through `ImageCapture.takePhoto()` and
+hands it to `App`, which saves the original and sends a downscaled copy to the
+recognition path, then the sheet closes. On a browser without `ImageCapture`
+the shutter is hidden and the sheet can only be closed; see
+[image-capture.md](image-capture.md).
 
-- **Barcode scanning.** A `setTimeout` loop (`DETECT_INTERVAL`, 120 ms, roughly
-  eight passes per second) runs the barcode detector against the live video
-  element. The interval is a deliberate compromise between responsiveness and
-  battery drain on a handheld device.
-- **Label capture.** The shutter button grabs one frame, downscales and
-  compresses it, and hands it to the recognition path.
-
-Three behaviours in this component are worth stating explicitly:
-
-- **Duplicate suppression.** A barcode remains in the camera's view for many
-  frames. `lastHitRef` records the last decoded value and its timestamp, and a
-  repeat of the same value within `DEDUPE_MS` (1800 ms) is discarded. Without
-  this, one physical barcode produces a burst of identical hits.
-- **Teardown.** `aliveRef` is checked after every `await` and in the loop body,
-  and the effect's cleanup stops the media tracks. This is what prevents the
-  camera indicator remaining lit, and what makes `StrictMode`'s double mount
-  harmless.
-- **Targeted versus free scanning.** When opened from a field's scan button the
-  sheet receives that `target` descriptor, writes the first hit into that field,
-  and closes itself after a short delay so the operator sees what was captured.
-  When opened from the main capture panel there is no target; the decoded value
-  is displayed with a "use this code" button instead of being written
-  automatically.
+**Teardown.** `aliveRef` is checked after every `await`, and the effect's
+cleanup stops the media tracks. This is what prevents the camera indicator
+remaining lit, and what makes `StrictMode`'s double mount harmless.
 
 Camera failures are mapped to operator-facing Vietnamese text through
 `ERROR_TEXT`, keyed by `DOMException.name`. The insecure-context and
@@ -145,10 +124,13 @@ exceptions rather than as an unexplained rejection. The video constraints use
 `ideal` rather than `exact` for `facingMode`, which keeps the application usable
 on a development laptop that has only a front-facing camera.
 
-`grabFrame` draws the current video frame to a canvas, scales the long edge down
-to 1280 px, and encodes JPEG at quality 0.82. A raw 1920 px frame is roughly
-1.5 MB; the compressed frame is roughly 150 KB. On warehouse WiFi that
-difference determines whether recognition feels immediate.
+`takeFullPhoto` asks the sensor for a real still image at the maximum
+resolution reported by `getPhotoCapabilities()`, retrying without size settings
+if the device rejects them. `getPhotoInfo` reports that maximum for display.
+`downscale` scales the long edge down to 1280 px and encodes JPEG at quality
+0.82, roughly 150 KB, for the viewfinder and the recognition upload.
+`buildFilename`, `saveToDevice`, and `shareFile` store the original on the
+device. The capture pipeline is described in [image-capture.md](image-capture.md).
 
 `torchCapable` and `setTorch` drive the device flash through
 `MediaStreamTrack.applyConstraints`. Support is not universal, so both failure
@@ -157,35 +139,16 @@ hidden after the fact if applying the constraint throws.
 
 `buzz` wraps `navigator.vibrate`, which is a no-op or absent on some platforms.
 
-### `src/lib/barcode.js`
-
-Selects the decoding engine and caches the selection in a module-level promise,
-so the choice is made once per page load.
-
-The native `BarcodeDetector` is preferred where present: on Chrome for Android
-it is backed by the Google Play Services ML stack, costs no additional download,
-and is markedly faster. It is absent on Chrome for Windows and Linux, where the
-module falls back to a dynamically imported WebAssembly ponyfill.
-
-Because the import is dynamic, Android devices never download the WebAssembly
-payload. The ponyfill fetches its `.wasm` file from a CDN and therefore requires
-internet access on development machines; devices using the native engine do not.
-
-`WANTED_FORMATS` is intersected with the formats the chosen engine reports as
-supported. Narrowing this array to the symbologies a given warehouse actually
-uses improves both speed and accuracy, and is the intended tuning point.
-
 ### `src/lib/normalize.js`
 
-Converts raw text — from a barcode, or eventually from the recognition service —
-into the forms the schema expects, and holds the regular expressions derived
-from the sample labels. See [data-model.md](data-model.md) for the rules
+Converts raw text from the recognition service into the forms the schema
+expects, and holds the regular expressions derived from the sample labels. See [data-model.md](data-model.md) for the rules
 themselves.
 
 ### `src/index.css`
 
 Defines design tokens on `:root` and styles every component, including the
-scanner sheet.
+camera sheet.
 
 Several choices target the operating environment explicitly:
 
@@ -198,7 +161,7 @@ Several choices target the operating environment explicitly:
 - `overscroll-behavior-y: none` disables pull-to-refresh, preventing accidental
   loss of unsaved form data.
 - `env(safe-area-inset-top)` and `env(safe-area-inset-bottom)` inset the fixed
-  header, the action bar, and the scanner's own controls on devices with display
+  header, the action bar, and the camera sheet's own controls on devices with display
   cutouts.
 - `max-width: 520px` with automatic horizontal margins preserves the handheld
   layout when the application is opened on a desktop browser.
@@ -208,14 +171,13 @@ Several choices target the operating environment explicitly:
 ## Rendering and data flow
 
 ```
-                     ┌─ barcode decode ─────────────┐
-live camera  ────────┤                              ├─→ values + provenance
-                     └─ frame capture → recognition ┘         metadata
-                                        (stubbed)                 ↓
-                                                    operator review and correction
-                                                                  ↓
-                                        validation → confirmation → persistence
-                                                                     (stubbed)
+live camera ─→ takePhoto ─→ recognition ─→ values + provenance
+                               (stubbed)          metadata
+                                                     ↓   ←── manual entry
+                                       operator review and correction
+                                                     ↓
+                                validation → confirmation → persistence
+                                                              (stubbed)
 ```
 
 Application state is held in `App` using `useState` and passed downward through
@@ -227,7 +189,7 @@ form the core of the design:
   recognition confidence, and whether the operator has since edited it.
 
 Validation state is not stored. The `errors` object is derived from `values`
-through `useMemo` (line 212), which makes it impossible for validation results
+through `useMemo` (line 191), which makes it impossible for validation results
 to drift out of step with the data they describe.
 
 Provenance is communicated to the stylesheet through a data attribute. `Field`
@@ -235,32 +197,30 @@ renders `data-src={src}`, and `index.css` matches on `[data-src="sure"]`,
 `[data-src="doubt"]`, and `[data-invalid="true"]` to colour the vertical
 indicator bar beside each control.
 
-The two input paths are not equal in authority. `applyAiResult` skips any field
-whose metadata records `via: "scan"`, so a barcode that has already been decoded
-is never overwritten by a later recognition pass. A decoded barcode is exact
-where recognition is probabilistic, and the operator should not have to defend a
-scanned value against the model.
-
 ## Image capture
 
 Capture uses `getUserMedia` with a live preview rather than the native file
 input. The earlier prototype used `<input type="file" capture="environment">`,
 which required no permission handling and worked over plain HTTP; it was
-replaced because barcode scanning needs a continuous frame source, and because a
-live viewfinder lets the operator see that the label is framed before the shutter
-is pressed.
+replaced because a live viewfinder lets the operator see that the label is
+framed before the shutter is pressed.
 
 The cost of that change is a secure-context requirement: `getUserMedia` is
 unavailable over plain HTTP to a LAN address. The development server therefore
 runs HTTPS with a self-signed certificate; see [development.md](development.md).
 
+The live video feeds the preview only. Still photos are taken exclusively through the ImageCapture API; drawing a video frame to a
+canvas is no longer used, because it is limited to the stream resolution
+(typically 1920×1080) and to the stream's video processing. Details are in
+[image-capture.md](image-capture.md).
+
 ## Known stubs
 
-| Location                   | Current behaviour                            | Intended behaviour                                   |
-| -------------------------- | -------------------------------------------- | ---------------------------------------------------- |
-| `FAKE_AI` (line 66)        | Hard-coded recognition result                | Response from the recognition service                |
-| `recognize` (line 253)     | Waits 900 ms, then applies `FAKE_AI`         | Uploads `frame.blob` and consumes the response       |
-| `confirm` (line 302)       | Logs the payload to the console              | Submits the payload to the backend                   |
+| Location                 | Current behaviour                     | Intended behaviour                              |
+| ------------------------ | ------------------------------------- | ----------------------------------------------- |
+| `FAKE_AI` (line 67)    | Hard-coded recognition result         | Response from the recognition service           |
+| `recognize` (line 223) | Waits 900 ms, then applies`FAKE_AI` | Uploads`frame.blob` and consumes the response |
+| `confirm` (line 291)   | Logs the payload to the console       | Submits the payload to the backend              |
 
 Both stub sites carry source comments identifying the implementation step that
 will replace them. `applyAiResult`, which normalises and merges the result, is

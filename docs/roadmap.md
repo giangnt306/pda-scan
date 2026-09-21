@@ -3,9 +3,8 @@
 ## Current state
 
 The prototype implements the complete operator workflow with recognition and
-persistence stubbed locally. An operator may open the camera, scan a barcode
-into a specific field, photograph the label for recognition, review proposed
-values with confidence indication, correct any field, and confirm a validated
+persistence stubbed locally. An operator may open the camera, photograph the
+label for recognition, review proposed values with confidence indication, correct any field, and confirm a validated
 record. Nothing leaves the browser.
 
 Implemented:
@@ -14,31 +13,32 @@ Implemented:
 - Data-driven form schema covering six mandatory and seven optional fields,
   derived from physical sample labels
 - Live camera sheet over `getUserMedia`, with torch control and haptic feedback
-- Barcode decoding with a native engine where available and a lazily loaded
-  WebAssembly ponyfill elsewhere, with duplicate suppression
-- Per-field scan targeting, plus free scanning from the capture panel
-- Frame capture with downscaling and JPEG compression
+- Label capture through `ImageCapture.takePhoto()` at full sensor resolution,
+  with a downscaled JPEG for display and recognition
+- Saving the original photo to the device (download or Android share sheet)
 - Normalisation of the date and code formats observed on the sample labels
-- Provenance model distinguishing scanned, recognised, and manual data, with
-  barcode precedence and confidence downgrade on failed normalisation
+- Provenance model distinguishing recognised and manual data, with confidence
+  downgrade on failed normalisation
 - Per-field format validation with deferred error presentation
 - Session counter and confirmation toast
 
 Not implemented:
 
+- Barcode scanning
 - Recognition service and image upload
 - Persistence backend
 - Authentication and operator identity
 - Offline capability and submission queueing
 - Automated tests
+- Label capture on browsers without the ImageCapture API (manual entry still works)
 
 ## Outstanding work
 
 ### Recognition integration
 
-Replace the body of `recognize` (`src/App.jsx`, line 253) with an upload of
-`frame.blob` and consumption of the service response. The response contract is
-defined by the shape of `FAKE_AI` (line 66) and is documented in
+Replace the body of `recognize` (`src/App.jsx`, line 223) with an upload of
+`frame.blob` (the downscaled photo) and consumption of the service response. The response contract is
+defined by the shape of `FAKE_AI` (line 67) and is documented in
 [data-model.md](data-model.md). `applyAiResult` is written against the real
 contract and should not need to change.
 
@@ -64,7 +64,7 @@ The following must be addressed during integration:
 
 ### Persistence
 
-Replace the `console.log` in `confirm` (line 302) with a request to the
+Replace the `console.log` in `confirm` (line 291) with a request to the
 persistence endpoint. Submit `metas` and the captured photo alongside `values`,
 so that provenance is retained for later accuracy measurement and a disputed
 record can be checked against its label.
@@ -81,9 +81,9 @@ state. This has implications for the confirmation flow and for the session
 counter, which currently counts local confirmations rather than persisted
 records.
 
-Barcode scanning and normalisation both work offline; recognition and
-persistence do not. A queued-submission design would let an operator continue
-working through an outage using scans and manual entry alone, which is worth
+Capture and normalisation both work offline; recognition and persistence do
+not. A queued-submission design would let an operator continue working through
+an outage using manual entry alone, which is worth
 preserving as a constraint on whatever queueing mechanism is chosen.
 
 ### Schema and format patterns
@@ -106,13 +106,12 @@ committed, or the reference should be corrected to say where they live.
   the button enabled and the press apparently inert, with the error visible only
   if the optional section is expanded. Either the button state should account
   for all errors, or confirmation should scroll to the offending field.
-- **Free-scan routing.** A barcode scanned from the capture panel is written to
-  `partNumber` regardless of its content. Routing by matching the decoded value
-  against the format patterns would be more robust once more than one barcode
-  format is in play.
-- **Detection interval.** `DETECT_INTERVAL` is 120 ms, chosen as a compromise
-  without measurement. It should be checked against battery drain and decode
-  latency on the actual device.
+- **Capture latency.** `takePhoto()` at maximum sensor resolution can take
+  noticeably longer than a preview frame, and the shutter shows "giữ yên máy"
+  meanwhile. Measure it on the target PDA; if it is too slow, request a lower
+  `imageWidth` rather than reintroducing video-frame capture.
+- **Original upload.** Only the downscaled copy is used today. Decide whether
+  the backend needs the full-resolution original before building persistence.
 
 ### Testing
 
@@ -132,14 +131,14 @@ revisited only when a concrete requirement justifies it.
 | TypeScript               | Few modules; type errors are not the present failure mode                    |
 | Component library        | One screen, one form; styling requirements are specific to the environment   |
 | State management library | State is local to a single component                                         |
-| Routing                  | The application has one screen; the scanner is conditional rendering, not a route |
+| Routing                  | The application has one screen; the camera sheet is conditional rendering, not a route |
 | Test framework           | One pure module currently warrants testing; `node -e` covers it              |
 | iOS support              | The target hardware is Android PDAs                                          |
 
 ## Structural note
 
-`App.jsx` holds the field schema, the form components, and all state, at 431
-lines. The camera, barcode, and normalisation concerns have already been
+`App.jsx` holds the field schema, the form components, and all state, at 462
+lines. The camera and normalisation concerns have already been
 extracted into `src/lib/` and `ScannerSheet.jsx`, which is where the bulk of the
 growth went.
 

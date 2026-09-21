@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
 import ScannerSheet from "./ScannerSheet.jsx";
 import { normalizeDate, normalizeCode, PART_NUMBER_RE, SA_NUMBER_RE } from "./lib/normalize.js";
+import { downscale, buildFilename, saveToDevice, shareFile } from "./lib/camera.js";
+
+const fmtKB = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MB` : `${Math.round(n / 1024)} KB`);
 
 /* ------------------------------------------------------------------
    Schema rút từ nhãn thật trong kho (xem thư mục samples/).
@@ -18,7 +21,6 @@ const REQUIRED_FIELDS = [
     key: "partNumber",
     label: "Part Number",
     mono: true,
-    scannable: true,
     placeholder: "BEX75149000AB",
     validate: (v) =>
       PART_NUMBER_RE.test(v) ? "" : "Sai định dạng — cần 3 chữ + 8 số + 2–6 chữ",
@@ -31,13 +33,12 @@ const REQUIRED_FIELDS = [
     key: "location",
     label: "Vị trí lưu kho",
     mono: true,
-    scannable: true,
     placeholder: "A-03-02",
   },
 ];
 
 const OPTIONAL_FIELDS = [
-  { key: "batch", label: "Batch", mono: true, scannable: true, placeholder: "260917_79F" },
+  { key: "batch", label: "Batch", mono: true, placeholder: "260917_79F" },
   {
     key: "saNumber",
     label: "SA Number",
@@ -78,7 +79,7 @@ const DATE_KEYS = new Set(["shipmentDate"]);
 
 /* ------------------------------------------------------------------ */
 
-function Field({ field, value, meta, error, onChange, onScan }) {
+function Field({ field, value, meta, error, onChange }) {
   const src = meta?.edited ? "manual" : meta?.src || "manual";
   const id = `f-${field.key}`;
   const required = REQUIRED_FIELDS.some((f) => f.key === field.key);
@@ -103,7 +104,6 @@ function Field({ field, value, meta, error, onChange, onScan }) {
             </span>
           )}
           {meta?.edited && <span className="chip edited">đã sửa</span>}
-          {!meta?.edited && meta?.via === "scan" && <span className="chip sure">đã quét</span>}
           {!meta?.edited && meta?.via === "ai" && meta.src === "sure" && (
             <span className="chip sure">AI {Math.round(meta.confidence * 100)}%</span>
           )}
@@ -130,27 +130,6 @@ function Field({ field, value, meta, error, onChange, onScan }) {
               type={field.type || "text"}
               inputMode={field.type === "number" ? "numeric" : undefined}
             />
-          )}
-
-          {field.scannable && (
-            <button
-              type="button"
-              className="scanbtn"
-              onClick={() => onScan(field)}
-              aria-label={`Quét ${field.label}`}
-              title={`Quét ${field.label}`}
-            >
-              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-                <path
-                  d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                />
-                <path d="M7 12h10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-            </button>
           )}
         </div>
 
@@ -179,7 +158,6 @@ function FieldList({ fields, ...rest }) {
       meta={rest.metas[f.key]}
       error={rest.errors[f.key]}
       onChange={rest.onChange}
-      onScan={rest.onScan}
     />
   );
 
@@ -206,8 +184,9 @@ export default function App() {
   const [touched, setTouched] = useState(false);
   const [saved, setSaved] = useState(0);
   const [toast, setToast] = useState("");
-  const [scanner, setScanner] = useState(null);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const [reading, setReading] = useState(false);
+  const [autoSave, setAutoSave] = useState(true);
 
   const errors = useMemo(() => {
     const e = {};
@@ -239,15 +218,6 @@ export default function App() {
     setMetas((s) => (s[key] ? { ...s, [key]: { ...s[key], edited: true } } : s));
   }
 
-  function handleBarcode(key, value) {
-    const target = key || "partNumber";
-    setValues((s) => ({ ...s, [target]: normalizeCode(value) }));
-    setMetas((s) => ({ ...s, [target]: { src: "sure", via: "scan", confidence: 1, edited: false } }));
-    setToast(`Đã quét ${value}`);
-    setTimeout(() => setToast(""), 1800);
-    setScanner(null);
-  }
-
   /* Bước 4 thay thân hàm này bằng POST ảnh lên backend.
    * Phần xử lý kết quả bên dưới giữ nguyên. */
   async function recognize(frame) {
@@ -262,8 +232,6 @@ export default function App() {
     const nextMetas = { ...metas };
 
     for (const [key, r] of Object.entries(result)) {
-      if (nextMetas[key]?.via === "scan") continue; // barcode luôn thắng OCR
-
       let v = r.value;
       if (DATE_KEYS.has(key)) v = normalizeDate(v);
       else if (key === "partNumber" || key === "saNumber") v = normalizeCode(v);
@@ -283,10 +251,31 @@ export default function App() {
     setShowOptional(true);
   }
 
-  function handlePhoto(frame) {
+  /* `shot` là ảnh gốc ImageCapture chưa nén. Lưu nguyên bản vào máy,
+   * còn bản thu nhỏ dùng để hiển thị và gửi OCR. */
+  async function handlePhoto(shot) {
     if (photo?.url) URL.revokeObjectURL(photo.url);
-    setPhoto(frame);
-    recognize(frame); // chụp xong là đọc luôn, không bắt bấm thêm nút
+
+    const filename = buildFilename(shot);
+    if (autoSave) saveToDevice(shot.blob, filename);
+
+    const small = await downscale(shot.blob);
+    setPhoto({
+      ...small,
+      original: {
+        blob: shot.blob,
+        filename,
+        width: shot.width,
+        height: shot.height,
+        bytes: shot.blob.size,
+        ms: shot.ms,
+      },
+    });
+    if (autoSave) {
+      setToast(`Đã lưu ${filename}`);
+      setTimeout(() => setToast(""), 2600);
+    }
+    recognize(small); // chụp xong là đọc luôn
   }
 
   function reset() {
@@ -331,15 +320,64 @@ export default function App() {
             {photo ? (
               <img src={photo.url} alt="Ảnh nhãn vừa chụp" />
             ) : (
-              <p>Mở camera để quét mã vạch hoặc chụp lại nhãn</p>
+              <p>Mở camera để chụp nhãn</p>
             )}
             {reading && <div className="reading">Đang đọc nhãn…</div>}
           </div>
           <div className="capture-actions">
-            <button className="primary" onClick={() => setScanner({ target: null })}>
+            <button className="primary" onClick={() => setCameraOpen(true)}>
               {photo ? "Chụp lại" : "Mở camera"}
             </button>
           </div>
+        </section>
+
+        <section className="testbench">
+          <label className="check">
+            <input type="checkbox" checked={autoSave} onChange={(e) => setAutoSave(e.target.checked)} />
+            Tự lưu ảnh gốc vào máy sau khi chụp
+          </label>
+
+          {photo?.original && (
+            <dl className="shotinfo">
+              <div>
+                <dt>Ảnh gốc</dt>
+                <dd className="mono">
+                  {photo.original.width}×{photo.original.height} · {fmtKB(photo.original.bytes)}
+                </dd>
+              </div>
+              <div>
+                <dt>Thời gian chụp</dt>
+                <dd className="mono">{photo.original.ms} ms</dd>
+              </div>
+              <div>
+                <dt>Bản gửi OCR</dt>
+                <dd className="mono">
+                  {photo.width}×{photo.height} · {fmtKB(photo.blob.size)}
+                </dd>
+              </div>
+              <div className="full">
+                <dt>Tên file</dt>
+                <dd className="mono small">{photo.original.filename}</dd>
+              </div>
+              <div className="actions">
+                <button className="btn small" onClick={() => saveToDevice(photo.original.blob, photo.original.filename)}>
+                  Tải lại ảnh gốc
+                </button>
+                <button
+                  className="btn small"
+                  onClick={async () => {
+                    const ok = await shareFile(photo.original.blob, photo.original.filename);
+                    if (!ok) {
+                      setToast("Máy không hỗ trợ chia sẻ file — dùng Tải lại ảnh gốc");
+                      setTimeout(() => setToast(""), 2600);
+                    }
+                  }}
+                >
+                  Lưu vào Thư viện ảnh
+                </button>
+              </div>
+            </dl>
+          )}
         </section>
 
         <div className="legend">
@@ -367,7 +405,6 @@ export default function App() {
             metas={metas}
             errors={touched ? errors : {}}
             onChange={handleChange}
-            onScan={(field) => setScanner({ target: field })}
           />
         </section>
 
@@ -383,7 +420,6 @@ export default function App() {
               metas={metas}
               errors={touched ? errors : {}}
               onChange={handleChange}
-              onScan={(field) => setScanner({ target: field })}
             />
           </section>
         ) : (
@@ -418,13 +454,8 @@ export default function App() {
         </div>
       )}
 
-      {scanner && (
-        <ScannerSheet
-          target={scanner.target}
-          onBarcode={handleBarcode}
-          onPhoto={handlePhoto}
-          onClose={() => setScanner(null)}
-        />
+      {cameraOpen && (
+        <ScannerSheet onPhoto={handlePhoto} onClose={() => setCameraOpen(false)} />
       )}
     </div>
   );

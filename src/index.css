@@ -471,10 +471,9 @@ body {
 }
 
 /* ================================================================
-   BƯỚC 2 — camera quét mã
+   BƯỚC 2 — camera chụp nhãn
 ================================================================ */
 
-/* Nút quét nhỏ trong từng trường */
 .control {
   display: flex;
   align-items: center;
@@ -485,24 +484,6 @@ body {
 .control > textarea {
   flex: 1;
   min-width: 0;
-}
-
-.scanbtn {
-  flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
-  background: var(--surface);
-  color: var(--ink);
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  margin-right: -4px;
-}
-.scanbtn:active {
-  background: var(--ink);
-  color: #fff;
 }
 
 /* ---------- Màn hình camera ---------- */
@@ -622,25 +603,6 @@ body {
   color: #cfd5de;
   text-align: center;
 }
-.sheet-hint em {
-  font-style: normal;
-  color: #98a1ad;
-}
-
-.sheet-hit {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: center;
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: var(--r);
-  padding: 8px 12px;
-  font-size: 16px;
-}
-.sheet-hit .chip.sure {
-  color: #6ee7a8;
-}
 
 .shutter {
   width: 100%;
@@ -685,4 +647,86 @@ body {
   color: #fff;
   font-size: 16px;
   font-weight: 600;
+}
+
+/* ================================================================
+   Thông tin ảnh chụp (ImageCapture)
+================================================================ */
+.testbench {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--ink);
+  min-height: 36px;
+}
+.check input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--primary);
+}
+
+.shotinfo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.shotinfo > div {
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  min-width: 0;
+}
+.shotinfo > div:nth-child(-n + 2) {
+  border-top: 0;
+}
+.shotinfo > div:nth-child(even):not(.full):not(.actions) {
+  border-left: 1px solid var(--line);
+}
+.shotinfo > .full,
+.shotinfo > .actions {
+  grid-column: 1 / -1;
+}
+.shotinfo dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+.shotinfo dd {
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.shotinfo dd.small {
+  font-size: 12px;
+  word-break: break-all;
+}
+.shotinfo .actions {
+  display: flex;
+  gap: 8px;
+}
+.shotinfo .actions .btn {
+  flex: 1;
+}
+
+.sheet-mode {
+  font-size: 12px;
+  font-weight: 500;
+  color: #aeb6c2;
+  margin-top: 2px;
+}
+
+.sheet-shot-error {
+  color: #ffb4b4;
+  font-size: 14px;
+  text-align: center;
 }

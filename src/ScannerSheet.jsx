@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { getBarcodeEngine, FORMAT_LABEL } from "./lib/barcode.js";
-import { startCamera, stopCamera, torchCapable, setTorch, grabFrame, buzz } from "./lib/camera.js";
-
-const DEDUPE_MS = 1800; // cùng một mã trong khoảng này thì bỏ qua
-const DETECT_INTERVAL = 120; // ~8 lần/giây, đủ nhanh mà đỡ tốn pin
+import {
+  startCamera,
+  stopCamera,
+  torchCapable,
+  setTorch,
+  buzz,
+  imageCaptureSupported,
+  getPhotoInfo,
+  takeFullPhoto,
+} from "./lib/camera.js";
 
 const ERROR_TEXT = {
   SecurityError:
@@ -15,23 +20,21 @@ const ERROR_TEXT = {
   NotSupportedError: "Trình duyệt này không hỗ trợ truy cập camera. Dùng Chrome trên Android.",
 };
 
-export default function ScannerSheet({ target, onBarcode, onPhoto, onClose }) {
+export default function ScannerSheet({ onPhoto, onClose }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const lastHitRef = useRef({ value: "", at: 0 });
   const aliveRef = useRef(true);
 
   const [status, setStatus] = useState("starting"); // starting | ready | error
   const [errorKey, setErrorKey] = useState(null);
-  const [engineNative, setEngineNative] = useState(null);
   const [torchOn, setTorchOn] = useState(false);
   const [canTorch, setCanTorch] = useState(false);
-  const [hit, setHit] = useState(null); // { value, format }
   const [busy, setBusy] = useState(false);
+  const [photoInfo, setPhotoInfo] = useState(null);
+  const [shotError, setShotError] = useState("");
 
   useEffect(() => {
     aliveRef.current = true;
-    let timer = null;
 
     (async () => {
       try {
@@ -39,26 +42,8 @@ export default function ScannerSheet({ target, onBarcode, onPhoto, onClose }) {
         if (!aliveRef.current) return stopCamera(stream);
         streamRef.current = stream;
         setCanTorch(torchCapable(stream));
+        getPhotoInfo(stream).then((info) => aliveRef.current && setPhotoInfo(info));
         setStatus("ready");
-
-        const { detector, native } = await getBarcodeEngine();
-        if (!aliveRef.current) return;
-        setEngineNative(native);
-
-        const loop = async () => {
-          if (!aliveRef.current) return;
-          const video = videoRef.current;
-          if (video?.readyState >= 2) {
-            try {
-              const codes = await detector.detect(video);
-              if (codes.length > 0) handleHit(codes[0]);
-            } catch {
-              /* frame lỗi thì bỏ qua, vòng sau detect tiếp */
-            }
-          }
-          if (aliveRef.current) timer = setTimeout(loop, DETECT_INTERVAL);
-        };
-        loop();
       } catch (err) {
         if (!aliveRef.current) return;
         setErrorKey(err?.name || "NotSupportedError");
@@ -68,30 +53,10 @@ export default function ScannerSheet({ target, onBarcode, onPhoto, onClose }) {
 
     return () => {
       aliveRef.current = false;
-      clearTimeout(timer);
       stopCamera(streamRef.current);
       streamRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  function handleHit(code) {
-    const value = (code.rawValue || "").trim();
-    if (!value) return;
-
-    const now = Date.now();
-    const last = lastHitRef.current;
-    if (last.value === value && now - last.at < DEDUPE_MS) return;
-    lastHitRef.current = { value, at: now };
-
-    buzz(60);
-    setHit({ value, format: code.format });
-
-    if (target) {
-      onBarcode?.(target.key, value);
-      setTimeout(() => aliveRef.current && onClose?.(), 350);
-    }
-  }
 
   async function toggleTorch() {
     const next = !torchOn;
@@ -102,18 +67,26 @@ export default function ScannerSheet({ target, onBarcode, onPhoto, onClose }) {
 
   async function shoot() {
     setBusy(true);
+    setShotError("");
+
     try {
-      const frame = await grabFrame(videoRef.current);
+      const shot = await takeFullPhoto(streamRef.current);
       buzz(40);
-      onPhoto?.(frame);
+      onPhoto?.(shot);
       onClose?.();
-    } catch {
+    } catch (err) {
+      setShotError(err?.message || "Chụp thất bại, thử lại");
       setBusy(false);
     }
   }
 
+  const canShoot = imageCaptureSupported();
+  const modeLabel = canShoot
+    ? `ImageCapture${photoInfo?.maxWidth ? ` · tối đa ${photoInfo.maxWidth}×${photoInfo.maxHeight}` : ""}`
+    : "Trình duyệt không hỗ trợ ImageCapture — không chụp được nhãn";
+
   return (
-    <div className="sheet" role="dialog" aria-modal="true" aria-label="Camera quét mã">
+    <div className="sheet" role="dialog" aria-modal="true" aria-label="Camera chụp nhãn">
       <video ref={videoRef} className="sheet-video" muted playsInline />
 
       {status === "ready" && (
@@ -127,7 +100,8 @@ export default function ScannerSheet({ target, onBarcode, onPhoto, onClose }) {
           Đóng
         </button>
         <div className="sheet-title">
-          {target ? `Quét ${target.label.toLowerCase()}` : "Quét mã hoặc chụp nhãn"}
+          Chụp nhãn
+          <div className="sheet-mode">{modeLabel}</div>
         </div>
         {canTorch ? (
           <button
@@ -155,29 +129,16 @@ export default function ScannerSheet({ target, onBarcode, onPhoto, onClose }) {
       )}
 
       <div className="sheet-bottom">
-        {hit ? (
-          <div className="sheet-hit">
-            <span className="chip sure">{FORMAT_LABEL[hit.format] || hit.format}</span>
-            <span className="mono">{hit.value}</span>
-            {!target && (
-              <button className="btn small" onClick={() => onBarcode?.(null, hit.value)}>
-                Dùng mã này
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="sheet-hint">
-            {status === "ready"
-              ? "Đưa mã vạch vào giữa khung"
-              : "\u00a0"}
-            {engineNative === false && <em> · đang dùng bộ giải mã dự phòng</em>}
-          </div>
-        )}
+        <div className="sheet-hint">
+          {status === "ready" ? "Đưa toàn bộ nhãn vào giữa khung" : " "}
+        </div>
 
-        {status === "ready" && (
+        {shotError && <div className="sheet-shot-error">{shotError}</div>}
+
+        {status === "ready" && canShoot && (
           <button className="shutter" onClick={shoot} disabled={busy} aria-label="Chụp nhãn">
             <span />
-            {busy ? "Đang xử lý…" : "Chụp nhãn để nhận dạng"}
+            {busy ? "Đang chụp… giữ yên máy" : "Chụp nhãn để nhận dạng"}
           </button>
         )}
       </div>
