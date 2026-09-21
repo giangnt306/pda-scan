@@ -1,7 +1,7 @@
 {
   "name": "pda-scan",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
@@ -9,11 +9,13 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
+    "barcode-detector": "^3.0.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@vitejs/plugin-basic-ssl": "^1.2.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^8.3.0"
+    "vite": "^5.4.11"
   }
 }

@@ -469,3 +469,220 @@ body {
     animation: none !important;
   }
 }
+
+/* ================================================================
+   BƯỚC 2 — camera quét mã
+================================================================ */
+
+/* Nút quét nhỏ trong từng trường */
+.control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.control > input,
+.control > select,
+.control > textarea {
+  flex: 1;
+  min-width: 0;
+}
+
+.scanbtn {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  color: var(--ink);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  margin-right: -4px;
+}
+.scanbtn:active {
+  background: var(--ink);
+  color: #fff;
+}
+
+/* ---------- Màn hình camera ---------- */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Vùng tối bao quanh, chừa ô sáng ở giữa */
+.sheet-mask {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.sheet-window {
+  width: min(78vw, 340px);
+  aspect-ratio: 5 / 3;
+  border-radius: 10px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.55);
+}
+
+.sheet-top {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: calc(10px + env(safe-area-inset-top)) 12px 10px 12px;
+  background: linear-gradient(rgba(0, 0, 0, 0.7), transparent);
+  color: #fff;
+}
+.sheet-title {
+  font-size: 15px;
+  font-weight: 600;
+  text-align: center;
+  flex: 1;
+}
+
+.ghost {
+  min-height: 44px;
+  min-width: 60px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--r);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ghost.on {
+  background: #ffd24a;
+  color: #241c00;
+}
+.ghost-spacer {
+  display: block;
+  min-width: 60px;
+}
+
+.sheet-center {
+  position: relative;
+  z-index: 2;
+  margin: auto;
+  color: #fff;
+  text-align: center;
+  padding: 24px;
+  max-width: 340px;
+}
+.sheet-center.error {
+  background: rgba(0, 0, 0, 0.78);
+  border-radius: var(--r);
+}
+.sheet-center strong {
+  display: block;
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+.sheet-center p {
+  font-size: 15px;
+  line-height: 1.45;
+  color: #d5d9e0;
+  margin-bottom: 16px;
+}
+
+.sheet-bottom {
+  position: relative;
+  z-index: 2;
+  margin-top: auto;
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom)) 16px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8) 30%);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+}
+
+.sheet-hint {
+  font-size: 14px;
+  color: #cfd5de;
+  text-align: center;
+}
+.sheet-hint em {
+  font-style: normal;
+  color: #98a1ad;
+}
+
+.sheet-hit {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: var(--r);
+  padding: 8px 12px;
+  font-size: 16px;
+}
+.sheet-hit .chip.sure {
+  color: #6ee7a8;
+}
+
+.shutter {
+  width: 100%;
+  max-width: 340px;
+  min-height: var(--tap);
+  border: 0;
+  border-radius: var(--r);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  cursor: pointer;
+}
+.shutter span {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid var(--ink);
+}
+.shutter:disabled {
+  opacity: 0.6;
+}
+
+.btn.small {
+  min-height: 38px;
+  font-size: 14px;
+  padding: 0 12px;
+}
+
+/* Lớp phủ khi đang gọi OCR */
+.reading {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(19, 24, 32, 0.72);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
