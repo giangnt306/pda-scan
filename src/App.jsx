@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import ScannerSheet from "./ScannerSheet.jsx";
 import { normalizeDate, normalizeCode, PART_NUMBER_RE, SA_NUMBER_RE } from "./lib/normalize.js";
-import { downscale, buildFilename, saveToDevice, shareFile } from "./lib/camera.js";
+import { downscale, buildFilename, photoId, saveToDevice, shareFile } from "./lib/camera.js";
 
 const fmtKB = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MB` : `${Math.round(n / 1024)} KB`);
 
@@ -60,6 +60,15 @@ const OPTIONAL_FIELDS = [
 ];
 
 const ALL_FIELDS = [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS];
+
+// ponytail: chưa có login nên cố định người chụp; thay bằng user đăng nhập khi có auth.
+const CAPTURED_BY = "Nguyễn Văn An";
+
+/* Do hệ thống sinh, không nằm trong `values` nên người dùng không sửa được. */
+const SYSTEM_FIELDS = [
+  { key: "photoId", label: "ID ảnh", mono: true, readOnly: true, placeholder: "Sinh khi chụp" },
+  { key: "capturedBy", label: "Người chụp", readOnly: true },
+];
 const emptyValues = () => Object.fromEntries(ALL_FIELDS.map((f) => [f.key, ""]));
 
 /* Kết quả giả lập, mô phỏng đúng nhãn BATTERY_PACK_REAR_FENDER.
@@ -90,6 +99,7 @@ function Field({ field, value, meta, error, onChange }) {
     onChange: (e) => onChange(field.key, e.target.value),
     className: field.mono ? "mono" : undefined,
     placeholder: field.placeholder,
+    readOnly: field.readOnly,
   };
 
   return (
@@ -256,12 +266,14 @@ export default function App() {
   async function handlePhoto(shot) {
     if (photo?.url) URL.revokeObjectURL(photo.url);
 
-    const filename = buildFilename(shot);
+    const at = new Date();
+    const filename = buildFilename(shot, at);
     if (autoSave) saveToDevice(shot.blob, filename);
 
     const small = await downscale(shot.blob);
     setPhoto({
       ...small,
+      id: photoId(at),
       original: {
         blob: shot.blob,
         filename,
@@ -291,7 +303,7 @@ export default function App() {
   function confirm() {
     setTouched(true);
     if (blocking || Object.keys(errors).length) return;
-    console.log("Xác nhận:", { values, metas, photo: photo?.blob });
+    console.log("Xác nhận:", { values, metas, ...systemValues, photo: photo?.blob });
     setSaved((n) => n + 1);
     setToast(`Đã lưu ${values.partNumber}`);
     setTimeout(() => setToast(""), 2600);
@@ -299,6 +311,7 @@ export default function App() {
   }
 
   const filled = REQUIRED_FIELDS.length - blocking;
+  const systemValues = { photoId: photo?.id || "", capturedBy: CAPTURED_BY };
 
   return (
     <div className="app">
@@ -391,6 +404,14 @@ export default function App() {
             <i style={{ background: "var(--src-doubt)" }} /> Cần kiểm tra
           </span>
         </div>
+
+        <section className="group">
+          <header>
+            <h2>Thông tin ảnh</h2>
+            <span className="note">tự động</span>
+          </header>
+          <FieldList fields={SYSTEM_FIELDS} values={systemValues} metas={{}} errors={{}} onChange={() => {}} />
+        </section>
 
         <section className="group">
           <header>

@@ -132,13 +132,20 @@ export async function downscale(blob, maxSide = 1280, quality = 0.82) {
    Lưu ảnh ra máy
 ================================================================ */
 
-export function buildFilename({ width, height }) {
-  const d = new Date();
+const stamp = (d) => {
   const p = (n) => String(n).padStart(2, "0");
-  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(
     d.getMinutes()
   )}${p(d.getSeconds())}`;
-  return `pda_${width}x${height}_${stamp}.jpg`;
+};
+
+/* ID ảnh: IMG-YYYYMMDD-HHMMSS-mmm, mili-giây để hai lần chụp liền nhau không trùng. */
+export function photoId(d) {
+  return `IMG-${stamp(d)}-${String(d.getMilliseconds()).padStart(3, "0")}`;
+}
+
+export function buildFilename({ width, height }, d = new Date()) {
+  return `pda_${width}x${height}_${stamp(d)}.jpg`;
 }
 
 /* Tải xuống → Chrome Android lưu vào thư mục Download.
