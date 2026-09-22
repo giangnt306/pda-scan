@@ -3,18 +3,23 @@
   "private": true,
   "version": "0.2.0",
   "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "vite --host",
-    "build": "vite build",
-    "preview": "vite preview --host"
+    "dev": "node scripts/dev.js",
+    "dev:webapp": "npm run dev --workspace @pda-scan/webapp",
+    "dev:server": "npm run dev --workspace @pda-scan/server",
+    "dev:ai": "npm run dev --workspace @pda-scan/ai-server",
+    "start:server": "npm run start --workspace @pda-scan/server",
+    "build": "npm run build --workspace @pda-scan/webapp",
+    "preview": "npm run preview --workspace @pda-scan/webapp",
+    "test": "npm run test --workspaces --if-present && npm run test:sim",
+    "test:server": "npm run test --workspace @pda-scan/server",
+    "test:ai": "npm run test --workspace @pda-scan/ai-server",
+    "test:sim": "node --test \"scripts/sim/test/**/*.test.js\""
   },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-basic-ssl": "^1.2.0",
-    "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^5.4.11"
+  "engines": {
+    "node": ">=22.13"
   }
 }

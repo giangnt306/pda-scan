@@ -70,17 +70,14 @@ const SYSTEM_FIELDS = [
 ];
 const emptyValues = () => Object.fromEntries(ALL_FIELDS.map((f) => [f.key, ""]));
 
-/* Kết quả giả lập, mô phỏng đúng nhãn BATTERY_PACK_REAR_FENDER.
- * Bước 4 thay bằng response thật; cấu trúc giữ nguyên. */
-const FAKE_AI = {
-  partNumber: { value: "BEX32181030AB", confidence: 0.94 },
-  partName: { value: "BATTERY_PACK_REAR_FENDER", confidence: 0.96 },
-  quantity: { value: "80", confidence: 0.91 },
-  shipmentDate: { value: "15/9/2026", confidence: 0.62 }, // viết tay → độ tin thấp
-  saNumber: { value: "5300013009", confidence: 0.89 },
-  variant: { value: "Limo Green", confidence: 0.93 },
-  supplier: { value: "Nội bộ — Made in Vietnam", confidence: 0.75 },
-};
+/* Response `POST /api/recognitions` của Main BE: `fields` đã theo đúng `key` của form,
+ * BE đã chuẩn hoá (ngày ISO, số, alias nhà cung cấp). Trường `missing` có value null → bỏ. */
+const toAiResult = (body) =>
+  Object.fromEntries(
+    Object.entries(body.fields || {})
+      .filter(([, f]) => f.value != null)
+      .map(([key, f]) => [key, { value: String(f.value), confidence: f.confidence }])
+  );
 
 const SURE_THRESHOLD = 0.9;
 
@@ -244,13 +241,30 @@ export default function App() {
     setMetas((s) => (s[key] ? { ...s, [key]: { ...s[key], edited: true } } : s));
   }
 
-  /* Bước 4 thay thân hàm này bằng POST ảnh lên backend.
-   * Phần xử lý kết quả bên dưới giữ nguyên. */
+  /* POST ảnh thu nhỏ lên Main BE qua proxy `/api` của Vite (vite.config.js).
+   * Timeout 60 s: chuỗi phải giảm dần webapp 60 s > BE 20 s > ai-server 18 s,
+   * để nhận được lỗi 504 có cấu trúc thay vì tự bỏ cuộc. */
   async function recognize(frame) {
     setReading(true);
-    await new Promise((r) => setTimeout(r, 900)); // giả lập độ trễ mạng
-    applyAiResult(FAKE_AI);
-    setReading(false);
+    try {
+      const form = new FormData();
+      form.append("image", frame.blob, "label.jpg");
+      const res = await fetch("/api/recognitions", {
+        method: "POST",
+        body: form,
+        signal: AbortSignal.timeout(60000),
+      });
+      const body = await res.json().catch(() => ({}));
+      // Lỗi từ BE luôn có body.error; không có nghĩa là Vite proxy không tới được BE.
+      if (!res.ok)
+        throw new Error(body.error?.message || `Không kết nối được máy chủ (HTTP ${res.status})`);
+      applyAiResult(toAiResult(body));
+    } catch (err) {
+      setToast(`Không đọc được nhãn — nhập tay. (${err.message})`);
+      setTimeout(() => setToast(""), 4000);
+    } finally {
+      setReading(false);
+    }
   }
 
   function applyAiResult(result) {
