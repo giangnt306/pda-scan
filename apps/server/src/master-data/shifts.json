@@ -1,0 +1,5 @@
+[
+  { "code": "sang",  "name": "Ca sáng",  "startsAt": "06:00", "endsAt": "14:00" },
+  { "code": "chieu", "name": "Ca chiều", "startsAt": "14:00", "endsAt": "22:00" },
+  { "code": "dem",   "name": "Ca đêm",   "startsAt": "22:00", "endsAt": "06:00" }
+]

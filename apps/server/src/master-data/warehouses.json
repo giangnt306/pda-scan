@@ -1,0 +1,5 @@
+[
+  { "code": "LB", "name": "Kho Long Biên", "active": true },
+  { "code": "HD", "name": "Kho Hải Dương", "active": true },
+  { "code": "TL", "name": "Kho Thăng Long", "active": false }
+]
