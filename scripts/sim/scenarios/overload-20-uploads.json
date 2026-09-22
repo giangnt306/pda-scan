@@ -1,0 +1,20 @@
+{
+  "name": "overload-20-uploads",
+  "description": "20 upload đồng thời vào giới hạn 3 chạy + 10 chờ; kiểm 429 và không mất ổn định",
+  "requires": ["sim", "events"],
+  "settleMs": 15000,
+  "timeoutMs": 180000,
+  "steps": [
+    { "at": 0, "action": "sim.set", "scope": "global", "patch": { "ocr": { "mode": "slow", "delayMs": 8000 } } },
+    { "at": 500, "action": "uploads.burst", "count": 20, "concurrency": 20 },
+    { "at": 2000, "action": "expectNow", "check": "queue.peakWaiting", "op": ">=", "value": 5 },
+    { "at": 30000, "action": "sim.clear", "scope": "global" }
+  ],
+  "expect": [
+    { "check": "counter.busy429", "op": ">=", "value": 1 },
+    { "check": "queue.peakInflight", "op": "<=", "value": 3 },
+    { "check": "queue.peakWaiting", "op": "<=", "value": 10 },
+    { "check": "counter.otherError", "op": "==", "value": 0 },
+    { "check": "status.backendEnd", "op": "==", "value": "up" }
+  ]
+}

@@ -51,7 +51,7 @@ Add the current LAN address, for example:
 http://192.168.1.xx:5173
 ```
 
-Set the flag to **Enabled** and restart Chrome. Then remove `basicSsl()` from `vite.config.js`.
+Set the flag to **Enabled** and restart Chrome. Then remove `basicSsl()` from `apps/webapp/vite.config.js`.
 
 This is for development only. Production deployments should use a valid TLS certificate.
 
@@ -108,11 +108,11 @@ Some devices may report support but reject the torch constraint. In that case, t
 
 ## Verifying Date Normalisation
 
-`src/lib/normalize.js` contains the main branching logic and can be checked directly without a test framework:
+`apps/webapp/src/lib/normalize.js` contains the main branching logic and can be checked directly without a test framework:
 
 ```bash
 node --input-type=module -e '
-import { normalizeDate } from "./src/lib/normalize.js";
+import { normalizeDate } from "./apps/webapp/src/lib/normalize.js";
 for (const s of ["18SEP2026", "2026/8/21", "15.09.2026", "15/9/2026", "20260821", "rubbish"])
   console.log(s.padEnd(12), "->", normalizeDate(s) || "(rejected)");
 '

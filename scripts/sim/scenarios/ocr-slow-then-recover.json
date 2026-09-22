@@ -1,0 +1,21 @@
+{
+  "name": "ocr-slow-then-recover",
+  "description": "OCR chậm 25 s rồi hồi phục; kiểm PDA nhận timeout và hệ thống tự lành",
+  "requires": ["sim", "events"],
+  "settleMs": 8000,
+  "timeoutMs": 180000,
+  "steps": [
+    { "at": 0, "action": "sim.set", "scope": "global", "patch": { "ocr": { "mode": "slow", "delayMs": 25000 } } },
+    { "at": 200, "action": "devices.start", "devices": 3, "rate": 6, "recognize": true },
+    { "at": 30000, "action": "note", "text": "— OCR trở lại bình thường —" },
+    { "at": 30000, "action": "sim.clear", "scope": "global" },
+    { "at": 60000, "action": "devices.stop" }
+  ],
+  "expect": [
+    { "check": "receipts.delta", "op": ">=", "value": 6 },
+    { "check": "counter.netError", "op": "==", "value": 0 },
+    { "check": "events.count", "type": "recognition.failed", "op": ">=", "value": 1 },
+    { "check": "recovery.ms", "op": "<=", "value": 15000 },
+    { "check": "requestId.unique", "op": "==", "value": true }
+  ]
+}

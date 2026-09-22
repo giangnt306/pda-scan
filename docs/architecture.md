@@ -9,7 +9,7 @@
 3. Reviews and corrects the extracted data.
 4. Confirms the record before persistence.
 
-The app is currently a functional prototype. The UI, label capture, and review flow are complete. Image recognition and persistence are still local stubs.
+The app is currently a functional prototype. The UI, label capture, and review flow are complete. Recognition posts to the Main Backend `POST /api/recognitions` (`apps/server`) through the Vite `/api` proxy; the backend calls `apps/ai-server`. Persistence is still local.
 
 ## Technology Stack
 
@@ -29,14 +29,14 @@ Barcode scanning is not implemented. Values come from label recognition or manua
 ## Source Layout
 
 ```text
-index.html            Vite entry point, document shell, viewport, fonts
-vite.config.js        HTTPS dev server and plugin configuration
-src/main.jsx          React root
-src/App.jsx           Field schema, form components, application state
-src/ScannerSheet.jsx  Full-screen camera and label capture
-src/lib/camera.js     Camera, torch, photo, haptics
-src/lib/normalize.js  Date/code normalization and label patterns
-src/index.css         Design tokens and component styling
+apps/webapp/index.html            Vite entry point, document shell, viewport, fonts
+apps/webapp/vite.config.js        HTTPS dev server and plugin configuration
+apps/webapp/src/main.jsx          React root
+apps/webapp/src/App.jsx           Field schema, form components, application state
+apps/webapp/src/ScannerSheet.jsx  Full-screen camera and label capture
+apps/webapp/src/lib/camera.js     Camera, torch, photo, haptics
+apps/webapp/src/lib/normalize.js  Date/code normalization and label patterns
+apps/webapp/src/index.css         Design tokens and component styling
 docs/                 Documentation
 ```
 
@@ -44,9 +44,9 @@ Current file sizes: `App.jsx` 462 lines, `index.css` 732, `ScannerSheet.jsx` 147
 
 ## Module Responsibilities
 
-### `index.html`
+### `apps/webapp/index.html`
 
-Vite uses `index.html` as the application entry point and resolves `src/main.jsx` from it.
+Vite uses `apps/webapp/index.html` as the application entry point and resolves `apps/webapp/src/main.jsx` from it.
 
 The document is optimized for handheld use:
 
@@ -56,13 +56,13 @@ The document is optimized for handheld use:
 - `theme-color` matches the app header.
 - Barlow and IBM Plex Mono are loaded from Google Fonts with `preconnect`.
 
-### `src/main.jsx`
+### `apps/webapp/src/main.jsx`
 
 Mounts the React app with React 18 `createRoot` and `StrictMode`.
 
 `StrictMode` is development-only and may run renders/effects twice. The camera effect is designed to handle this safely.
 
-### `src/App.jsx`
+### `apps/webapp/src/App.jsx`
 
 Contains the form schema, form components, and application state.
 
@@ -70,7 +70,7 @@ Contains the form schema, form components, and application state.
 - `FieldList` groups consecutive fields marked `half` into one row.
 - `App` manages the full screen: capture panel, photo information, provenance legend, required/optional fields, action bar, toast, and camera sheet.
 
-### `src/ScannerSheet.jsx`
+### `apps/webapp/src/ScannerSheet.jsx`
 
 Provides the full-screen camera UI:
 
@@ -86,7 +86,7 @@ If `ImageCapture` is unavailable, the shutter is hidden and the sheet can only b
 
 Camera errors are mapped to Vietnamese operator messages through `ERROR_TEXT`. Insecure-context and permission errors include recovery instructions.
 
-### `src/lib/camera.js`
+### `apps/webapp/src/lib/camera.js`
 
 Wraps the browser MediaDevices API.
 
@@ -101,13 +101,13 @@ Wraps the browser MediaDevices API.
 
 See `image-capture.md` for the capture pipeline.
 
-### `src/lib/normalize.js`
+### `apps/webapp/src/lib/normalize.js`
 
 Converts raw recognition text into the schema's expected formats and contains regular expressions derived from the sample labels.
 
 See `data-model.md` for the detailed rules.
 
-### `src/index.css`
+### `apps/webapp/src/index.css`
 
 Defines design tokens and styles all components, including the camera sheet.
 
@@ -174,8 +174,6 @@ See `image-capture.md` for details.
 
 | Location                 | Current behavior                        | Intended behavior                             |
 | ------------------------ | --------------------------------------- | --------------------------------------------- |
-| `FAKE_AI` (line 67)    | Returns a hard-coded recognition result | Use the recognition service response          |
-| `recognize` (line 223) | Waits 900 ms, then applies`FAKE_AI`   | Upload`frame.blob` and process the response |
 | `confirm` (line 291)   | Logs the payload to the console         | Submit the payload to the backend             |
 
 Each stub includes a source comment describing the implementation step that will replace it.

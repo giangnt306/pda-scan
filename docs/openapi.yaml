@@ -1,0 +1,3470 @@
+openapi: 3.1.0
+
+info:
+  title: PDA Scan — Main Backend API
+  version: 0.5.0
+  summary: Hợp đồng HTTP của Main Backend cho ứng dụng nhập kho trên PDA.
+  description: |
+    Nguồn sự thật bằng văn bản, theo thứ tự thắng khi mâu thuẫn:
+    `docs/specs/phase-3/01-contracts.md` (bất biến) → `docs/specs/phase-4/01-contracts-api.md` →
+    `docs/specs/phase-5/02-contracts-api.md` → **file này** → các docs khác. File này là bản dịch
+    sang OpenAPI để máy đọc được; khi lệch nhau, **spec thắng**.
+
+    **Trạng thái triển khai — đọc trước khi tin bất cứ dòng nào**
+
+    **29 trên 30 operation trong file này đã chạy thật.** Operation duy nhất chưa triển khai là
+    `GET /api/events` (`x-status: planned`, SSE) — gọi thật trả `404 NOT_FOUND`; SSE đã hoãn sang
+    **Phase 6** (QUYẾT ĐỊNH O-1), Phase 5 dùng polling.
+    Mọi operation `x-status: phase-4` mô tả **code đang chạy**: `apps/server/src/` có
+    `lifecycle.js`, `outbox.js`, `outboxWorker.js`, `sap/`, `master.js`, `rules/`, `routes/`;
+    `db.js` có bảng `receipt_events` và `outbox`; `receipts` có đủ 8 cột vòng đời.
+
+    Ba operation `x-status: phase-5` cũng mô tả **code đang chạy** — hình dạng response trong file
+    này được chép lại từ response thật của một BE đang chạy, không phải từ spec: `src/events.js`
+    (sổ `system_events`), `src/routes/admin.js` (hai endpoint đọc cho màn hình giám sát),
+    `src/http.js` (`POST /api/devices/:deviceId/events`).
+
+    Đo lúc **2026-09-22 04:59 +07**. **Mốc thời gian này sẽ cũ đi** — thay vì tin nó, hãy chạy bộ
+    test hợp đồng, nó đối chiếu file này với bảng route thật và với response thật của BE theo cả
+    hai chiều, và đồng thời kiểm cú pháp chính file này:
+
+    ```bash
+    cd apps/server && node --disable-warning=ExperimentalWarning --test test/contract.test.js
+    ```
+
+    **Quy ước chung**
+
+    - Content-Type request JSON: `application/json` (sai → `415 UNSUPPORTED_MEDIA_TYPE`).
+    - Content-Type response: `application/json; charset=utf-8`, kèm `cache-control: no-store`.
+    - Thời gian: chuỗi ISO-8601 UTC có mili-giây và hậu tố `Z` (`new Date().toISOString()`).
+    - Khoảng thời gian: số nguyên **mili-giây**, tên trường luôn kết thúc bằng `Ms`.
+    - UUID: chữ thường, 36 ký tự, dạng v4.
+    - Mọi lỗi dùng chung shape `Error`. Khoá `details` **vắng mặt** khi không có (không phải `null`).
+    - BE **luôn** trả header `x-request-id`, kể cả trên response lỗi và response binary.
+
+    **Nhãn `x-status` trên từng operation**
+
+    | Giá trị | Nghĩa |
+    |---|---|
+    | `implemented` | Đã chạy thật trong `apps/server/src/http.js` từ Phase 1–2 (đã đọc code 2026-09-21) |
+    | `phase-3` | Thuộc hợp đồng Phase 3, đã nghiệm thu ở Phase 3 |
+    | `phase-4` | Thuộc **hợp đồng Phase 4**. Mô tả là *trạng thái đích theo hợp đồng*; xem khối "Trạng thái triển khai" ở trên trước khi gọi |
+    | `phase-5` | Thuộc **hợp đồng Phase 5** (sổ sự kiện, màn hình giám sát). Đã chạy thật, đã đối chiếu với response thật |
+    | `planned` | **Chưa triển khai, chưa có hợp đồng chi tiết.** Chỉ để nhìn thấy trước hình dạng. Ở bản 0.5.0 chỉ còn `GET /api/events` (SSE, hoãn sang Phase 6) |
+
+    **Mã lỗi thêm ở Phase 4** (mọi mã của Phase 3 giữ nguyên 100%; nguồn:
+    `docs/specs/phase-4/01-contracts-api.md` §10). Message tiếng Việt dưới đây là **nguyên văn**,
+    test của BE và FE so khớp từng ký tự:
+
+    | HTTP | code | message | Khi nào |
+    |---|---|---|---|
+    | 400 | `INVALID_QUERY` | `Tham số truy vấn không hợp lệ` | Query param sai kiểu/giá trị (`GET /api/receipts`, `GET /api/master/locations`) |
+    | 400 | `INVALID_CURSOR` | `Con trỏ phân trang không hợp lệ` | `?cursor=` không giải mã được |
+    | 409 | `RECEIPT_STATE_INVALID` | `Không thực hiện được thao tác này với trạng thái hiện tại của phiếu` | `retry-post` / `cancel` / `correct` gọi sai trạng thái |
+    | 409 | `SAP_NOT_CONFIGURED` | `Chưa cấu hình kết nối SAP` | Gọi `retry-post` khi `SAP_ADAPTER=none` |
+    | 409 | `DUPLICATE_LABEL` | `Nhãn này đã được nhập hôm nay` | Trùng nhãn cùng ngày + kho, chưa xác nhận |
+    | 422 | `LOCATION_UNKNOWN` | `Vị trí không có trong danh mục kho` | `location` ngoài danh mục |
+
+    Ba mã `SAP_*` nội bộ của adapter (`SAP_PART_UNKNOWN`, `SAP_UNAVAILABLE`, …) **không bao giờ**
+    ra tới response HTTP của PDA; chúng chỉ nằm trong `receipt_events.detail.code`,
+    `receipts.reject_code` và `outbox.last_error`.
+
+    **Mã lỗi thêm ở Phase 5** (mọi mã cũ giữ nguyên 100 %):
+
+    | HTTP | code | Khi nào |
+    |---|---|---|
+    | 400 | `INVALID_SINCE` | `GET /api/admin/events?since=` không phải số nguyên ≥ 0. `details = {since}` |
+    | 400 | `INVALID_EVENT_TYPE` | `POST /api/devices/:deviceId/events` có phần tử `type` ngoài danh sách trắng 5 giá trị. `details = {type, allowed}` |
+
+    **Biến môi trường thêm ở Phase 5** (nguồn: `apps/server/.env.example`):
+
+    | Biến | Mặc định | Tác dụng |
+    |---|---|---|
+    | `RECOGNITION_MODE` | `sync` | `async` → `POST /api/recognitions` trả `202` + `pollUrl` thay vì `201` |
+    | `RECOGNITION_POLL_HINT_MS` | `1000` | Vào `pollAfterMs` của body `202` và header `retry-after` |
+    | `EVENTS_ENABLED` | `true` | `false` → `events.write()` thành no-op, `GET /api/admin/events` trả `items: []` |
+    | `EVENTS_MAX_ROWS` | `2000` | Số dòng `system_events` giữ lại; vượt thì cắt dòng cũ nhất |
+    | `EVENTS_TRIM_EVERY` | `100` | Cứ mỗi N **dòng** ghi thì chạy cắt một lần |
+    | `EVENTS_MIRROR_RECEIPTS` | `true` | `false` → không ghi gương `receipt_events` sang `system_events` |
+  contact:
+    name: Tài liệu dự án
+    url: https://pda-scan.local/docs/index.md
+  license:
+    name: Nội bộ — không phát hành
+
+servers:
+  - url: http://127.0.0.1:3000
+    description: |
+      Main Backend chạy trực tiếp. `apps/server/.env` hiện đặt `HOST=0.0.0.0`, nên thực tế
+      cũng nghe trên địa chỉ LAN.
+  - url: https://{lanIp}:5173
+    description: |
+      Vite dev server (HTTPS, chứng chỉ tự ký) proxy mọi đường dẫn `/api` sang Main Backend.
+      Đây là địa chỉ **duy nhất** mà PDA cần biết; camera yêu cầu secure context nên phải là HTTPS.
+    variables:
+      lanIp:
+        default: 192.168.1.10
+        description: Địa chỉ IPv4 LAN của máy chạy dev server.
+
+tags:
+  - name: health
+    description: Kiểm tra sống chết ở mức thô.
+  - name: recognition
+    description: Nhận dạng nhãn từ ảnh.
+  - name: receipts
+    description: Phiếu nhập kho đã được người vận hành xác nhận.
+  - name: devices
+    description: Thiết bị (một cài đặt webapp trên một trình duyệt).
+  - name: sessions
+    description: Phiên làm việc (ca) của một thiết bị.
+  - name: status
+    description: Kênh trạng thái ngược cho PDA.
+  - name: master
+    description: Danh mục dữ liệu chủ (vị trí kho, kho, ca). Chỉ đọc, nạp một lần lúc khởi động.
+  - name: admin
+    description: Quản trị kịch bản mô phỏng và hai endpoint đọc của màn hình giám sát S9. Không có auth ở Phase 3–5.
+
+paths:
+
+  # ─────────────────────────────── ĐÃ TRIỂN KHAI (Phase 1–2) ───────────────────────────────
+
+  /api/health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Kiểm tra máy chủ còn sống và DB mở được
+      description: |
+        Shape 8 field này **không đổi** ở Phase 3 (`api.test.js` đang khoá nó). Mọi thông tin mới
+        nằm ở `GET /api/status`.
+
+        Lưu ý: `mockMode` là `null` khi `RECOGNITION_PROVIDER=http` — chỉ có giá trị khi provider là
+        `mock`. Endpoint này **bị chặn** khi `sim.backend.mode = "down"` (có chủ ý: nó mô phỏng máy
+        chủ chết thật); chỉ `/api/status` và `/api/admin/*` được miễn trừ.
+      x-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Máy chủ sống
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+              example:
+                ok: true
+                uptimeSec: 12
+                provider: http
+                mockMode: null
+                simOverride: true
+                simSaveFail: false
+                db: ok
+                receipts: 3
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/recognitions:
+    post:
+      operationId: createRecognition
+      tags: [recognition]
+      summary: Tải ảnh nhãn lên và nhận dạng (đồng bộ hoặc bất đồng bộ tuỳ RECOGNITION_MODE)
+      description: |
+        `multipart/form-data`, bắt buộc field `image` (file). Loại ảnh xác định bằng **magic bytes**
+        (JPEG/PNG/WebP), không tin `content-type` của client. Tên file trên đĩa do server tạo.
+
+        **Hai nhánh, chọn bằng biến môi trường `RECOGNITION_MODE`** (mặc định `sync`; client biết
+        mình đang ở nhánh nào bằng `recognition.mode` của `GET /api/status`, **không** hard-code):
+
+        | `RECOGNITION_MODE` | HTTP | Body | Header thêm |
+        |---|---|---|---|
+        | `sync` (mặc định) | `201` | kết quả đầy đủ, `status` là `completed` hoặc `failed` | — |
+        | `async` (Phase 5) | `202` | **cùng shape**, `status: "pending"`, `fields: null`, cộng `pollUrl` + `pollAfterMs` | `location`, `retry-after` |
+
+        Nhánh `sync`: BE gọi provider trong ngân sách `RECOGNITION_TIMEOUT_MS` (mặc định `20000` ms,
+        dùng chung cho cả 2 attempt) rồi mới trả kết quả.
+
+        Nhánh `async`: BE nhận ảnh, tạo dòng `recognitions` ở `pending`, trả `202` ngay, rồi chạy
+        nền. PDA poll `GET /api/recognitions/{recognitionId}` cho tới khi `status` khác `pending`.
+        Công việc **không** phụ thuộc kết nối của PDA: đóng tab hay reload giữa chừng, việc vẫn
+        chạy và kết quả vẫn đọc lại được.
+
+        Phase 3 bổ sung `fieldsFound` và `requestId` vào body response (tương thích ngược — chỉ thêm).
+      x-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XAppVersion'
+        - name: sim
+          in: query
+          required: false
+          description: |
+            Kịch bản OCR chỉ áp cho **đúng request này**. Chỉ có tác dụng khi `SIM_OVERRIDE=true`;
+            khi `false` bị bỏ qua hoàn toàn, không báo lỗi. Sai giá trị → `400 INVALID_SIM`
+            (giữ mã cũ, **không phải** `INVALID_SIM_CONFIG`).
+          schema: { $ref: '#/components/schemas/OcrMode' }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image]
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: Ảnh nhãn, tối đa `MAX_UPLOAD_BYTES` (mặc định 10485760 byte).
+      responses:
+        '201':
+          description: '`RECOGNITION_MODE=sync` — nhận dạng xong (kể cả khi không đọc được trường nào)'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionResult' }
+        '202':
+          description: |
+            `RECOGNITION_MODE=async` — đã nhận ảnh, việc nhận dạng chạy nền. Body **đúng shape**
+            của `GET /api/recognitions/{recognitionId}` cộng thêm `pollUrl` và `pollAfterMs`.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+            location:
+              description: '`/api/recognitions/{recognitionId}` — bằng đúng `pollUrl` trong body.'
+              schema: { type: string }
+            retry-after:
+              description: Số **giây** nên chờ trước lần poll đầu tiên, làm tròn lên từ `pollAfterMs`.
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionResult' }
+              example:
+                recognitionId: a1ce19e7-7eed-47b6-b361-ccd058df5ab0
+                status: pending
+                provider: mock
+                fieldsFound: 0
+                fields: null
+                warnings: []
+                error: null
+                image: { id: 444bbcfa-51bb-4634-93cf-ea9a9f90c90f, url: /api/images/444bbcfa-51bb-4634-93cf-ea9a9f90c90f, mimeType: image/jpeg, bytes: 2368698 }
+                durationMs: null
+                requestId: b4694a6b-1eb3-42f1-8c45-ed614c074763
+                createdAt: '2026-09-21T20:49:22.384Z'
+                finishedAt: null
+                pollUrl: /api/recognitions/a1ce19e7-7eed-47b6-b361-ccd058df5ab0
+                pollAfterMs: 1000
+        '400':
+          $ref: '#/components/responses/Err400'
+        '413':
+          $ref: '#/components/responses/Err413'
+        '415':
+          $ref: '#/components/responses/Err415'
+        '429':
+          $ref: '#/components/responses/Err429'
+        '502':
+          $ref: '#/components/responses/Err502'
+        '503':
+          $ref: '#/components/responses/Err503'
+        '504':
+          $ref: '#/components/responses/Err504'
+
+  /api/recognitions/{recognitionId}:
+    get:
+      operationId: getRecognition
+      tags: [recognition]
+      summary: Đọc lại một kết quả nhận dạng
+      description: |
+        Cùng shape với `201` của `POST /api/recognitions`, **trừ** `pollUrl`/`pollAfterMs` (hai key
+        đó chỉ có trên body `202`). `status` là `pending | completed | failed`.
+
+        Ở Phase 1–4 luồng là đồng bộ nên `pending` không tồn tại lâu. **Từ Phase 5**, khi
+        `RECOGNITION_MODE=async`, đây là endpoint **polling chính** của PDA.
+
+        **`status: "failed"` vẫn là HTTP `200`.** "Nhận dạng thất bại" là một *kết quả đã biết*,
+        không phải lỗi giao thức: chi tiết nằm ở `error.code` / `error.message`. Chỉ khi
+        `recognitionId` không tồn tại mới là `404 NOT_FOUND`.
+      x-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/RecognitionIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Kết quả nhận dạng
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecognitionResult' }
+        '404':
+          $ref: '#/components/responses/Err404'
+
+  /api/images/{imageId}:
+    get:
+      operationId: getImage
+      tags: [recognition]
+      summary: Tải ảnh nhãn đã lưu (binary)
+      description: |
+        Trả đúng `content-type` đã sniff được (`image/jpeg`, `image/png`, `image/webp`), kèm
+        `cache-control: private, max-age=3600` và `x-content-type-options: nosniff`.
+
+        Response này **cũng phải mang `x-request-id`** — handler dùng `res.writeHead(200, {...})`
+        nên phải đặt header trước đó hoặc thêm thẳng vào object của `writeHead`. Không có ngoại lệ.
+      x-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/ImageIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Nội dung ảnh
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+            cache-control:
+              schema: { type: string }
+              example: private, max-age=3600
+            x-content-type-options:
+              schema: { type: string }
+              example: nosniff
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/Err404'
+
+  /api/receipts:
+    post:
+      operationId: createReceipt
+      tags: [receipts]
+      summary: Lưu phiếu nhập kho đã xác nhận (idempotent theo requestId)
+      description: |
+        Thứ tự xử lý: validate hình thức → validate `data` (422) → kiểm `recognitionId` tồn tại
+        (422) → tính `payloadHash = sha256(canonicalJson({recognitionId, source, data đã ép kiểu}))`
+        → `INSERT` với `UNIQUE(request_id)`.
+
+        **Idempotency:** cùng `requestId` + cùng `payloadHash` → `200` với `idempotent: true`,
+        không tạo dòng mới. Cùng `requestId` + payload **khác** → `409 REQUEST_ID_CONFLICT`.
+
+        Kiểm tra idempotency chạy **trước** mô phỏng `save.mode=fail`, nên một `requestId` đã lưu
+        vẫn trả được bản cũ ngay cả khi đang bật mô phỏng lỗi lưu.
+
+        Phase 3 bổ sung `deviceId` và `sessionId` (lấy từ **header**, không lấy từ body) vào response.
+
+        **Phase 4 mở rộng** (hợp đồng `01-contracts-api.md` §9 — phần mở rộng chưa có trong
+        `http.js` lúc viết, xem khối "Trạng thái triển khai" ở `info.description`):
+
+        - Thêm field body `allowDuplicate` (boolean, mặc định `false`). Nó **không** tham gia
+          `payloadHash`, nên gửi lại cùng `requestId` kèm `allowDuplicate: true` sau khi bị 409
+          **không** bị coi là "payload khác" — đó chính là cơ chế của luồng xác nhận 2 bước.
+        - Thứ tự xử lý **bắt buộc**: hình thức → `validateReceiptData` → `recognitionId` tồn tại →
+          `payloadHash` → **idempotency (tra `requestId`)** → rule vị trí → rule trùng nhãn →
+          `save.mode` → transaction ghi. Idempotency phải đứng **trước** mọi rule, nếu không một
+          lần retry của `transport.js` (cùng `requestId`) sẽ tự phát hiện chính mình là trùng nhãn.
+        - Hai mã lỗi mới: `409 DUPLICATE_LABEL` (§9.3) và `422 LOCATION_UNKNOWN` (§9.4).
+        - Response thêm 7 field của phiếu (xem `schemas.Receipt`). Phiếu vừa lưu **luôn** ở
+          `status: "confirmed"` — worker chưa chạy tại thời điểm trả lời.
+
+        **Khoá trùng nhãn** gồm 5 thành phần: `partNumber` + `batch` + `saNumber` +
+        `warehouse` (từ `sessions.warehouse` của `x-session-id`) + `day`. `batch`/`saNumber`/
+        `warehouse` là `null` thì so sánh như chuỗi rỗng. `day` là **ngày ĐỊA PHƯƠNG** suy từ
+        `receipts.created_at` cộng `TZ_OFFSET_MINUTES` (mặc định **420** = UTC+7), **không phải**
+        ngày UTC: kho vận hành ở Việt Nam, mốc 00:00 UTC rơi vào 07:00 giờ VN tức giữa ca sáng.
+        Mọi mốc thời gian **lưu trữ** vẫn là UTC; chỉ riêng khoá nghiệp vụ "cùng ngày" dùng ngày
+        địa phương.
+      x-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XAppVersion'
+        - name: simSave
+          in: query
+          required: false
+          description: Kịch bản lưu chỉ áp cho đúng request này. Sai giá trị → `400 INVALID_SIM`.
+          schema: { $ref: '#/components/schemas/SaveMode' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReceiptCreate' }
+            example:
+              requestId: 0f5b1f34-1d9e-4c9a-9a54-6d2bb2f19a11
+              recognitionId: 218e4142-7a3b-4c11-9f0e-1b2c3d4e5f60
+              source: camera
+              data:
+                partNumber: BEX32181030AB
+                partName: BATTERY_PACK_REAR_FENDER
+                quantity: 80
+                shipmentDate: '2026-09-15'
+                supplier: Nội bộ — Made in Vietnam
+                location: A-03-02
+                batch: null
+                saNumber: null
+                variant: null
+                plantDock: null
+                grossWeight: 12.5
+                packaging: null
+                note: null
+              fieldMeta:
+                partNumber: { via: ai, confidence: 0.94, edited: true, proposed: BEX32181030AB }
+              client:
+                submittedAt: '2026-09-21T14:10:00.000Z'
+                userAgent: Mozilla/5.0
+      responses:
+        '201':
+          description: Tạo mới. Body là bản ghi **đọc lại từ SQLite**.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Receipt' }
+        '200':
+          description: '`requestId` đã tồn tại với cùng payload → trả bản ghi cũ, `idempotent: true`.'
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Receipt' }
+        '400':
+          $ref: '#/components/responses/Err400'
+        '409':
+          $ref: '#/components/responses/Err409'
+        '413':
+          $ref: '#/components/responses/Err413'
+        '415':
+          $ref: '#/components/responses/Err415'
+        '422':
+          $ref: '#/components/responses/Err422'
+        '503':
+          $ref: '#/components/responses/Err503'
+    get:
+      operationId: listReceipts
+      tags: [receipts]
+      summary: Danh sách phiếu mới nhất (lọc + phân trang keyset)
+      description: |
+        Sắp xếp **cố định** `ORDER BY created_at DESC, rowid DESC`. Không có tham số đổi thứ tự.
+
+        **Phase 4 mở rộng** (hợp đồng `01-contracts-api.md` §2 — chưa có trong `http.js` lúc viết):
+        4 tham số lọc, phân trang **keyset** và ba key mới trong response (`nextCursor`, `counts`,
+        `serverTime`). Gọi kiểu Phase 1 (`?limit=3`) vẫn trả `items` đúng như cũ — chỉ thêm key,
+        không đổi/xoá.
+
+        **Phân trang keyset, không phải offset.** `cursor = base64url("<createdAt>|<rowid>")`.
+        Server đọc `limit + 1` dòng; đọc đủ `limit + 1` → cắt còn `limit` và `nextCursor` là cursor
+        của **dòng cuối cùng được trả về**, ngược lại `nextCursor = null`. Offset (`?page=`) cho kết
+        quả sai khi có phiếu mới chèn vào giữa lúc người dùng đang cuộn — đúng cảnh thường gặp ở kho.
+
+        **`counts` bỏ qua `status`, `limit`, `cursor`** và chỉ chịu `sessionId` + `deviceId`. Nhờ
+        vậy số trên các chip lọc của màn hình S6 ("Chờ SAP 2", "Lỗi 1") không về 0 ngay khi người
+        dùng bấm một chip.
+      x-status: implemented
+      parameters:
+        - name: sessionId
+          in: query
+          required: false
+          description: 'Lọc theo phiên. Sai định dạng → `400 INVALID_QUERY`, `details.field = "sessionId"`. **Phase 4.**'
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        - name: deviceId
+          in: query
+          required: false
+          description: 'Lọc theo thiết bị. Sai định dạng → `400 INVALID_QUERY`, `details.field = "deviceId"`. **Phase 4.**'
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        - name: status
+          in: query
+          required: false
+          description: |
+            Một hoặc nhiều giá trị `ReceiptStatus` **ngăn cách bằng dấu phẩy**, tối đa 8 giá trị.
+            BE `trim()` từng phần tử trước khi kiểm enum. `?status=` (rỗng) coi như **không lọc**,
+            không báo lỗi. Giá trị ngoài enum → `400 INVALID_QUERY` với
+            `details = {field: "status", allowed: [8 giá trị]}`. **Phase 4.**
+          schema: { type: string, example: 'posting,post_failed' }
+        - name: limit
+          in: query
+          required: false
+          description: |
+            Số bản ghi tối đa. Mặc định 20, trần 200. Giá trị **không parse được** (`?limit=abc`) →
+            dùng mặc định 20, **không** báo lỗi (giữ nguyên hành vi Phase 1, đã bị `api.test.js`
+            khoá). Parse được nhưng ngoài khoảng → **kẹp** về `[1, 200]`.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Chuỗi base64url **do chính BE sinh** (`nextCursor` của trang trước). Hỏng → `400
+            INVALID_CURSOR` với `details.cursor` là 64 ký tự đầu. Khác với `limit`: cursor hỏng
+            nghĩa là client đang phân trang sai, im lặng trả trang 1 sẽ làm FE lặp vô hạn. **Phase 4.**
+          schema: { type: string, example: MjAyNi0wOS0yMVQxNDoxMDowMC4zMjFafDQy }
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Danh sách, mới nhất trước
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                description: |
+                  `items` là key duy nhất **bắt buộc** — ba key còn lại là phần thêm của Phase 4,
+                  giữ `required` ở mức Phase 1 để client cũ không vỡ hợp đồng.
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Receipt' }
+                  nextCursor:
+                    type: [string, 'null']
+                    description: 'Cursor của trang kế; `null` khi đã hết. **Phase 4.**'
+                  counts: { $ref: '#/components/schemas/ReceiptCounts' }
+                  serverTime: { type: string, format: date-time }
+              example:
+                items: []
+                nextCursor: MjAyNi0wOS0yMVQxNDoxMDowMC4zMjFafDQy
+                counts:
+                  total: 12
+                  byStatus:
+                    confirmed: 0
+                    posting: 2
+                    posted: 8
+                    post_failed: 1
+                    rejected: 1
+                    cancelled: 0
+                    corrected: 0
+                    superseded: 0
+                serverTime: '2026-09-21T14:12:00.000Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+
+  /api/receipts/{receiptId}:
+    get:
+      operationId: getReceipt
+      tags: [receipts]
+      summary: Đọc lại một phiếu
+      description: |
+        **Phase 4 mở rộng:** response mang thêm 7 field vòng đời (`status`, `sapDocumentNo`,
+        `supersedesReceiptId`, `supersededByReceiptId`, `rejectCode`, `postAttempts`,
+        `cancelReason`) — xem `schemas.Receipt`. Đây cũng là endpoint FE poll sau khi gọi
+        `retry-post`: mỗi 2000 ms, tối đa 15 lần (30 s), dừng khi `status` rời khỏi `posting`.
+      x-status: implemented
+      parameters:
+        - $ref: '#/components/parameters/ReceiptIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Phiếu
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Receipt' }
+        '404':
+          $ref: '#/components/responses/Err404'
+
+  # ─────────────────────────────── PHASE 3 — thiết bị ───────────────────────────────
+
+  /api/devices/register:
+    post:
+      operationId: registerDevice
+      tags: [devices]
+      summary: Đăng ký hoặc cập nhật một thiết bị (idempotent)
+      description: |
+        Gọi lại với cùng `deviceId` là hợp lệ và **không tạo bản sao**: lần đầu trả `201` với
+        `created: true`, các lần sau trả `200` với `created: false`.
+
+        Khi cập nhật, chỉ ghi đè các field **có mặt trong body**; field vắng giữ nguyên giá trị cũ.
+        `last_seen` luôn được cập nhật.
+
+        `deviceId` lấy từ body **hoặc** header `x-device-id`. Có cả hai mà khác nhau →
+        `400 DEVICE_ID_MISMATCH`. Không có cả hai → `400 DEVICE_REQUIRED`.
+
+        `heartbeatIntervalMs` **luôn là 15000**. FE phải dùng số này, không hard-code.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceRegister' }
+            example:
+              deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+              name: PDA-01 Long Biên
+              appVersion: 0.2.0
+              platform: Android 13 · Chrome 120
+              network: wifi
+              screen: S3
+              meta: { userAgent: 'Mozilla/5.0 (Linux; Android 13)', viewport: 412x915 }
+      responses:
+        '201':
+          description: Tạo mới thiết bị
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceEnvelope' }
+              example:
+                device:
+                  id: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                  name: PDA-01 Long Biên
+                  appVersion: 0.2.0
+                  platform: Android 13 · Chrome 120
+                  network: wifi
+                  screen: S3
+                  status: online
+                  lastSeenAgeMs: 0
+                  firstSeen: '2026-09-21T14:03:05.123Z'
+                  lastSeen: '2026-09-21T14:03:05.123Z'
+                  meta: { userAgent: 'Mozilla/5.0 (Linux; Android 13)', viewport: 412x915 }
+                created: true
+                serverTime: '2026-09-21T14:03:05.123Z'
+                heartbeatIntervalMs: 15000
+        '200':
+          description: Thiết bị đã có, đã cập nhật
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeviceEnvelope' }
+        '400':
+          $ref: '#/components/responses/Err400'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/devices/{deviceId}/heartbeat:
+    post:
+      operationId: deviceHeartbeat
+      tags: [devices]
+      summary: Báo thiết bị còn sống (chu kỳ 15000 ms)
+      description: |
+        **Không** auto-register: `:deviceId` chưa có trong bảng `devices` → `404 DEVICE_NOT_FOUND`,
+        để FE biết mà gọi lại `POST /api/devices/register` **đúng một lần** rồi tiếp tục nhịp.
+
+        `battery` là **tỉ lệ 0..1** (không phải phần trăm); ngoài khoảng → **kẹp về biên**, không báo lỗi.
+        `pendingQueue` ở Phase 3–4 luôn là `0`; **từ Phase 5** nó là số phiếu đang nằm trong hàng
+        chờ ngoại tuyến của thiết bị, và là nguồn của cột «Hàng chờ» trên màn hình giám sát S9.
+
+        Dừng heartbeat khi `document.hidden === true`.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceHeartbeat' }
+            example:
+              appVersion: 0.2.0
+              network: wifi
+              battery: 0.62
+              pendingQueue: 0
+              screen: S3
+      responses:
+        '200':
+          description: Đã ghi nhận
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [ok]
+                    properties:
+                      ok: { type: boolean, const: true }
+                  - $ref: '#/components/schemas/DeviceEnvelope'
+        '400':
+          $ref: '#/components/responses/Err400'
+        '404':
+          $ref: '#/components/responses/Err404'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: Danh sách thiết bị, sắp xếp last_seen giảm dần
+      description: |
+        **Không phân trang** ở Phase 3 (số thiết bị demo dưới 20).
+
+        `status` được **tính tại thời điểm trả response**, không lưu DB:
+        `age = serverTime - lastSeen`; `age < 45000` → `online`; `age < 300000` → `stale`;
+        còn lại → `offline`.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Danh sách thiết bị kèm bộ đếm
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, counts, serverTime]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeviceListItem' }
+                  counts:
+                    type: object
+                    required: [total, online, stale, offline]
+                    properties:
+                      total: { type: integer, minimum: 0 }
+                      online: { type: integer, minimum: 0 }
+                      stale: { type: integer, minimum: 0 }
+                      offline: { type: integer, minimum: 0 }
+                  serverTime: { type: string, format: date-time }
+              example:
+                items:
+                  - id: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                    name: PDA-01 Long Biên
+                    appVersion: 0.2.0
+                    platform: Android 13 · Chrome 120
+                    network: wifi
+                    screen: S3
+                    status: online
+                    lastSeenAgeMs: 4210
+                    firstSeen: '2026-09-21T14:03:05.123Z'
+                    lastSeen: '2026-09-21T14:05:20.001Z'
+                    meta: {}
+                    battery: 0.12
+                    pendingQueue: 3
+                    activeSessionId: 6a1f0f0d-3cc4-4b26-9a2e-1e8be2b1c7a4
+                    sim: { hasOverride: true }
+                    session:
+                      id: 6a1f0f0d-3cc4-4b26-9a2e-1e8be2b1c7a4
+                      operator: Nguyễn Văn A
+                      warehouse: Kho Long Biên
+                      shift: sang
+                      startedAt: '2026-09-21T14:03:10.000Z'
+                    receiptsInSession: 7
+                  - id: 1c9e00a7-6b21-4d8f-8a3c-7d0e5f2a4b16
+                    name: null
+                    appVersion: null
+                    platform: null
+                    network: unknown
+                    screen: null
+                    status: offline
+                    lastSeenAgeMs: 900000
+                    firstSeen: '2026-09-20T02:11:00.000Z'
+                    lastSeen: '2026-09-21T13:50:20.001Z'
+                    meta: {}
+                    battery: null
+                    pendingQueue: 0
+                    activeSessionId: null
+                    sim: { hasOverride: false }
+                    session: null
+                    receiptsInSession: 0
+                counts: { total: 2, online: 1, stale: 0, offline: 1 }
+                serverTime: '2026-09-21T14:05:24.211Z'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  # ─────────────────────────────── PHASE 3 — phiên làm việc ───────────────────────────────
+
+  /api/sessions/start:
+    post:
+      operationId: startSession
+      tags: [sessions]
+      summary: Mở một phiên làm việc (ca) cho thiết bị
+      description: |
+        Một thiết bị chỉ có **tối đa 1 phiên đang mở**. Gọi `start` khi còn phiên mở → BE **tự đóng
+        phiên cũ** với `end_reason = "superseded"` rồi mở phiên mới; id phiên cũ nằm ở
+        `supersededSessionId` (hoặc `null` nếu không có phiên nào bị đóng).
+
+        Thiết bị chưa tồn tại → auto-register ngầm rồi tạo phiên.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionStart' }
+            example:
+              deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+              operator: NV-0142 Trần Văn Bình
+              warehouse: Kho Long Biên
+              shift: sang
+      responses:
+        '201':
+          description: Phiên mới
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session, supersededSessionId, serverTime]
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+                  supersededSessionId:
+                    type: [string, 'null']
+                    description: Id phiên vừa bị đóng tự động, hoặc `null`.
+                  serverTime: { type: string, format: date-time }
+              example:
+                session:
+                  id: 6a1f0f0d-3cc4-4b26-9a2e-1e8be2b1c7a4
+                  deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                  operator: NV-0142 Trần Văn Bình
+                  warehouse: Kho Long Biên
+                  shift: sang
+                  startedAt: '2026-09-21T14:06:00.000Z'
+                  endedAt: null
+                  endReason: null
+                  summary: { receipts: 0, recognitions: 0, recognitionsFailed: 0 }
+                supersededSessionId: null
+                serverTime: '2026-09-21T14:06:00.000Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/sessions/{sessionId}/end:
+    post:
+      operationId: endSession
+      tags: [sessions]
+      summary: Kết ca (idempotent)
+      description: |
+        Body có thể rỗng `{}`. Phiên **đã đóng** → `200` idempotent: trả nguyên phiên cũ với
+        `endedAt` cũ, **không đổi gì**, kèm `alreadyEnded: true`.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { $ref: '#/components/schemas/EndReason' }
+            example: { reason: manual }
+      responses:
+        '200':
+          description: Phiên đã đóng
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session, alreadyEnded, serverTime]
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+                  alreadyEnded: { type: boolean }
+                  serverTime: { type: string, format: date-time }
+              example:
+                session:
+                  id: 6a1f0f0d-3cc4-4b26-9a2e-1e8be2b1c7a4
+                  deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                  operator: NV-0142 Trần Văn Bình
+                  warehouse: Kho Long Biên
+                  shift: sang
+                  startedAt: '2026-09-21T14:06:00.000Z'
+                  endedAt: '2026-09-21T18:30:12.007Z'
+                  endReason: manual
+                  summary: { receipts: 12, recognitions: 15, recognitionsFailed: 1 }
+                alreadyEnded: false
+                serverTime: '2026-09-21T18:30:12.007Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+        '404':
+          $ref: '#/components/responses/Err404'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/sessions/{sessionId}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Đọc một phiên làm việc kèm tóm tắt
+      description: |
+        `summary` được tính bằng SQL **tại thời điểm đọc**, không lưu sẵn:
+        `receipts` = số phiếu có `session_id = :id`; `recognitions` = số lần nhận dạng;
+        `recognitionsFailed` = số lần nhận dạng có `status = 'failed'`.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/SessionIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Phiên
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session, serverTime]
+                properties:
+                  session: { $ref: '#/components/schemas/Session' }
+                  serverTime: { type: string, format: date-time }
+        '404':
+          $ref: '#/components/responses/Err404'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  # ─────────────────────────────── PHASE 3 — trạng thái ───────────────────────────────
+
+  /api/status:
+    get:
+      operationId: getStatus
+      tags: [status]
+      summary: Trạng thái hệ thống cho PDA (poll 10000 ms)
+      description: |
+        **Đường sống duy nhất** để PDA biết chuyện gì đang xảy ra. Endpoint này được **miễn trừ**
+        khỏi mô phỏng `backend.mode = down` và `readonly`, nhưng **vẫn chịu** `latencyMs` khi
+        `degraded` — vì "chậm" là một tình trạng cần quan sát được, và FE có timeout riêng 5000 ms
+        cho status poll.
+
+        **Không** cập nhật `devices.last_seen` (ngoại lệ duy nhất trong toàn API): poll status là
+        *đọc trạng thái*, không phải *dấu hiệu sống*.
+
+        `ocr` là kết quả probe `GET /health` của ai-server, có cache TTL **10000 ms**. Hệ quả kiểm
+        chứng được: tắt ai-server → chậm nhất 10 giây sau `ocr.reachable` thành `false`.
+
+        **`sap` — Phase 4 ĐẢO NGƯỢC quy tắc của Phase 3.** Ở Phase 3, `sap` **luôn** là
+        `{"reachable": false, "mode": "not_configured"}` và `sim.sap.mode` **không rò rỉ** vào đây.
+        Từ Phase 4 điều đó đổi **có chủ ý**: adapter SAP đã tồn tại và mock **chính là** adapter
+        đang chạy, nên `status.sap.mode` phản ánh đúng chế độ của adapter. Công thức:
+
+        ```
+        reachable = (SAP_ADAPTER !== "none") && (sim.effective.sap.mode !== "down")
+        mode      = (SAP_ADAPTER === "none") ? "not_configured" : sim.effective.sap.mode
+        ```
+
+        | `SAP_ADAPTER` | `sim.effective.sap.mode` | `status.sap` |
+        |---|---|---|
+        | `none` | bất kỳ | `{reachable: false, mode: "not_configured"}` |
+        | `mock` | `success` | `{reachable: true, mode: "success"}` |
+        | `mock` | `slow` | `{reachable: true, mode: "slow"}` |
+        | `mock` | `reject` | `{reachable: true, mode: "reject"}` |
+        | `mock` | `down` | `{reachable: false, mode: "down"}` |
+
+        Vẫn **đúng 2 key**, không thêm key nào. Khi `SIM_OVERRIDE=false`, `sim.effective` là mặc
+        định → `mode = "success"`, `reachable = true` (với adapter `mock`).
+
+        **`queue.outboxPending`** từ Phase 4 là `SELECT COUNT(*) FROM outbox WHERE state = 'pending'`
+        — đếm **cả** `kind='post'` lẫn `kind='reversal'`; `state='failed'` **không** tính (đã bỏ
+        cuộc, chờ người bấm "Gửi lại"). `SAP_ADAPTER=none` hoặc bảng rỗng → `0`.
+
+        Hai mục trên thuộc **hợp đồng Phase 4** — xem khối "Trạng thái triển khai" ở
+        `info.description`. `shape` của response **không đổi** ở Phase 4, chỉ đổi **giá trị**.
+
+        **Phase 5 MỞ RỘNG shape** — đây là lần đầu `/api/status` thêm key, và nó **chỉ thêm**:
+
+        - `queue` từ 3 key thành **5 key**: thêm `recognitionsPending` và
+          `recognitionsFailedRecent`, cả hai đếm trong **bảng `recognitions`** chứ không trong
+          semaphore, nên chúng vẫn đúng khi `RECOGNITION_MODE=async` và công việc chạy nền sau
+          khi PDA đã đóng tab.
+        - thêm khoá cấp một `recognition` (**5 key**, đọc thẳng từ config) ngay sau `queue`.
+          FE dùng `recognition.mode` để **tự biết** đi đường `sync` hay `async`, không hard-code.
+
+        Client Phase 3–4 bỏ qua key lạ nên vẫn chạy được; client Phase 5 thì **không** được coi
+        hai khối này là tuỳ chọn — chúng luôn có mặt.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Trạng thái đầy đủ — mọi key luôn có mặt
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StatusResponse' }
+              example:
+                backend: { state: up, readonly: false, latencyMs: 0, uptimeSec: 3612, simulated: false }
+                ocr:
+                  reachable: true
+                  configured: true
+                  ready: true
+                  simMode: null
+                  mode: success
+                  model: gpt-4o-mini
+                  provider: http
+                  checkedAt: '2026-09-21T14:05:18.400Z'
+                  latencyMs: 37
+                  cached: true
+                sap: { reachable: true, mode: success }
+                queue:
+                  recognitionsInflight: 1
+                  recognitionsWaiting: 0
+                  outboxPending: 2
+                  recognitionsPending: 1
+                  recognitionsFailedRecent: 0
+                recognition: { mode: async, maxConcurrent: 3, maxWaiting: 10, timeoutMs: 20000, pollHintMs: 1000 }
+                sim:
+                  enabled: true
+                  scope: global
+                  effective:
+                    backend: { mode: normal, latencyMs: 0 }
+                    ocr: { mode: success, delayMs: 0 }
+                    save: { mode: normal, latencyMs: 0 }
+                    sap: { mode: success, latencyMs: 0 }
+                  global:
+                    backend: { mode: normal, latencyMs: 0 }
+                    ocr: { mode: success, delayMs: 0 }
+                    save: { mode: normal, latencyMs: 0 }
+                    sap: { mode: success, latencyMs: 0 }
+                  device: null
+                  updatedAt: '2026-09-21T13:00:00.000Z'
+                serverTime: '2026-09-21T14:05:24.211Z'
+                version: 0.1.0
+
+  # ─────────────────────────────── PHASE 3 — quản trị kịch bản ───────────────────────────────
+
+  /api/admin/sim:
+    get:
+      operationId: getSimScenario
+      tags: [admin]
+      summary: Đọc kịch bản mô phỏng hiện tại (global + theo device)
+      description: |
+        Chỉ hoạt động khi `SIM_OVERRIDE=true`. Khi `false`, **mọi** method — kể cả `GET` — trả
+        `403 SIM_DISABLED`.
+
+        `global` **luôn đủ key** (đã trộn với `default`). `devices` là map `deviceId → object thô
+        đã lưu` (chỉ các key người dùng đặt); không có device nào → `{}`.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Kịch bản hiện tại
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimAdminState' }
+              example:
+                enabled: true
+                default:
+                  backend: { mode: normal, latencyMs: 0 }
+                  ocr: { mode: success, delayMs: 0 }
+                  save: { mode: normal, latencyMs: 0 }
+                  sap: { mode: success, latencyMs: 0 }
+                global:
+                  backend: { mode: degraded, latencyMs: 3000 }
+                  ocr: { mode: success, delayMs: 0 }
+                  save: { mode: normal, latencyMs: 0 }
+                  sap: { mode: success, latencyMs: 0 }
+                devices:
+                  0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511: { ocr: { mode: timeout } }
+                updatedAt: '2026-09-21T14:12:00.000Z'
+                serverTime: '2026-09-21T14:12:30.000Z'
+        '403':
+          $ref: '#/components/responses/Err403'
+    put:
+      operationId: putSimScenario
+      tags: [admin]
+      summary: Đặt/sửa kịch bản global (patch từng phần)
+      description: |
+        Body là **patch từng phần** — chỉ các key gửi lên được ghi đè, ở **cấp field** chứ không phải
+        cấp section. Body rỗng `{}` là **hợp lệ** (không đổi gì), trả `200` với trạng thái hiện tại.
+
+        Thứ tự ưu tiên đầy đủ, từ thấp đến cao:
+        `SIM_DEFAULT` → `MOCK_MODE` (chỉ `ocr.mode`, chỉ khi provider `mock`) → `sim_state` global →
+        `sim_state` device → `?sim=`/`?simSave=` → `SIM_SAVE_FAIL=true` (chỉ `save.mode`).
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScenarioPatch' }
+            example:
+              backend: { mode: degraded, latencyMs: 3000 }
+              ocr: { mode: slow, delayMs: 8000 }
+      responses:
+        '200':
+          description: Giống hệt `GET /api/admin/sim` sau khi áp thay đổi
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimAdminState' }
+        '400':
+          $ref: '#/components/responses/Err400'
+        '403':
+          $ref: '#/components/responses/Err403'
+        '415':
+          $ref: '#/components/responses/Err415'
+    delete:
+      operationId: deleteSimScenario
+      tags: [admin]
+      summary: Xoá dòng kịch bản global (không xoá kịch bản theo device)
+      description: |
+        Không có `?all=true`. Muốn xoá sạch: gọi endpoint này rồi
+        `DELETE /api/admin/sim/devices/{deviceId}` cho từng device.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Đã xoá; `global` giờ bằng `default`
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SimAdminState'
+                  - type: object
+                    required: [cleared]
+                    properties:
+                      cleared: { type: string, const: global }
+        '403':
+          $ref: '#/components/responses/Err403'
+
+  /api/admin/sim/devices/{deviceId}:
+    put:
+      operationId: putSimScenarioForDevice
+      tags: [admin]
+      summary: Đặt/sửa kịch bản cho đúng một thiết bị
+      description: |
+        Y hệt `PUT /api/admin/sim` nhưng ghi vào scope `device:<deviceId>`.
+        Thiết bị **chưa đăng ký vẫn được phép đặt** (để chuẩn bị trước cho demo); response có
+        `deviceKnown: false`.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScenarioPatch' }
+            example: { ocr: { mode: timeout } }
+      responses:
+        '200':
+          description: Kịch bản của thiết bị sau khi áp thay đổi
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SimDeviceState' }
+              example:
+                enabled: true
+                deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                deviceKnown: true
+                device: { ocr: { mode: timeout } }
+                effectiveForDevice:
+                  backend: { mode: degraded, latencyMs: 3000 }
+                  ocr: { mode: timeout, delayMs: 0 }
+                  save: { mode: normal, latencyMs: 0 }
+                  sap: { mode: success, latencyMs: 0 }
+                updatedAt: '2026-09-21T14:13:00.000Z'
+                serverTime: '2026-09-21T14:13:00.000Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+        '403':
+          $ref: '#/components/responses/Err403'
+        '415':
+          $ref: '#/components/responses/Err415'
+    delete:
+      operationId: deleteSimScenarioForDevice
+      tags: [admin]
+      summary: Xoá kịch bản của đúng một thiết bị
+      description: Xoá device chưa có dòng nào → vẫn `200`, không lỗi.
+      x-status: phase-3
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Đã xoá
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SimDeviceState'
+                  - type: object
+                    required: [cleared]
+                    properties:
+                      cleared: { type: string, const: device }
+              example:
+                enabled: true
+                cleared: device
+                deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                deviceKnown: true
+                device: null
+                effectiveForDevice:
+                  backend: { mode: normal, latencyMs: 0 }
+                  ocr: { mode: success, delayMs: 0 }
+                  save: { mode: normal, latencyMs: 0 }
+                  sap: { mode: success, latencyMs: 0 }
+                updatedAt: '2026-09-21T14:14:30.000Z'
+                serverTime: '2026-09-21T14:14:30.000Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+        '403':
+          $ref: '#/components/responses/Err403'
+
+  # ──────────────── PHASE 4 — vòng đời phiếu (hợp đồng, xem info.description) ────────────────
+
+  /api/receipts/{receiptId}/events:
+    get:
+      operationId: listReceiptEvents
+      tags: [receipts]
+      summary: Timeline chuyển trạng thái của một phiếu
+      description: |
+        Sự kiện **cũ nhất trước** (`ORDER BY id ASC`), **không phân trang** — một phiếu tối đa vài
+        chục sự kiện. Thứ tự `id` **là** thứ tự thời gian thật; dùng nó thay vì so `at` (tránh lệch ms).
+
+        - `:id` không tồn tại trong `receipts` → `404 NOT_FOUND`, message `Không có bản ghi này`.
+        - Phiếu tồn tại nhưng **chưa có sự kiện nào** (phiếu cũ được backfill lúc migration) →
+          `200` với `items: []`. **Không** phải 404.
+        - `actor.kind` ∈ `device | system | operator` — đúng 3 giá trị.
+        - `detail` **luôn** là object (ít nhất `{}`), không bao giờ `null`.
+        - `from` là `null` **chỉ** ở sự kiện đầu tiên của phiếu.
+
+        `detail.sapMessage` (nguyên văn tiếng Anh/Đức của SAP) **chỉ** xuất hiện ở đây và trong
+        log — nó **không** có trong response phiếu, để FE không hiển thị nhầm cho người vận hành.
+        Màn hình S6.1 được phép hiện nó trong khối "Chi tiết kỹ thuật" **gập lại mặc định**.
+
+        Method khác `GET` → `405 METHOD_NOT_ALLOWED`.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ReceiptIdPath'
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Danh sách sự kiện, cũ nhất trước
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receiptId, items, serverTime]
+                properties:
+                  receiptId: { type: string }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReceiptEvent' }
+                  serverTime: { type: string, format: date-time }
+              example:
+                receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                items:
+                  - id: 1
+                    receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                    at: '2026-09-21T14:10:00.321Z'
+                    from: null
+                    to: confirmed
+                    event: receipt.confirmed
+                    actor: { kind: device, deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511, sessionId: 6a1f0f0d-3cc4-4b26-9a2e-1e8be2b1c7a4 }
+                    detail: { source: camera, requestId: 0f5b1f34-1d9e-4c9a-9a54-6d2bb2f19a11, fieldsEdited: 2 }
+                  - id: 2
+                    receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                    at: '2026-09-21T14:10:01.004Z'
+                    from: confirmed
+                    to: posting
+                    event: receipt.posting
+                    actor: { kind: system, deviceId: null, sessionId: null }
+                    detail: { attempt: 1 }
+                  - id: 3
+                    receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                    at: '2026-09-21T14:10:21.118Z'
+                    from: posting
+                    to: rejected
+                    event: receipt.rejected
+                    actor: { kind: system, deviceId: null, sessionId: null }
+                    detail: { code: SAP_PART_UNKNOWN, sapMessage: Material BEX32181030AB does not exist in plant 1000, attempt: 1 }
+                serverTime: '2026-09-21T14:12:00.000Z'
+        '404':
+          $ref: '#/components/responses/Err404'
+
+  /api/receipts/{receiptId}/retry-post:
+    post:
+      operationId: retryPostReceipt
+      tags: [receipts]
+      summary: Gửi lại một phiếu đang ở post_failed
+      description: |
+        Đặt lại `outbox.attempts = 0`, `next_attempt_at = now`, `state = 'pending'`,
+        `last_error = NULL`; `receipts.status = 'posting'`; ghi **đúng một** dòng `receipt_events`
+        (`receipt.retry_requested`, `actor.kind = "operator"`). Nếu dòng outbox đã bị xoá (không
+        nên xảy ra ở `post_failed`), **tạo lại** với `kind = 'post'`.
+
+        **Trả `202 Accepted`, không phải `200`** — việc gửi SAP **chưa xảy ra** lúc trả lời; worker
+        nhặt job ở tick kế tiếp (≤ `OUTBOX_TICK_MS`, mặc định 1000 ms). Trả `200` sẽ làm FE tưởng
+        đã `posted`. FE **phải** poll `GET /api/receipts/{receiptId}` mỗi 2000 ms, tối đa 15 lần
+        (30 s), dừng khi `status` rời khỏi `posting`.
+
+        Body bị **bỏ qua hoàn toàn**, nhưng vẫn **bắt buộc** `content-type: application/json` (sai →
+        `415`): endpoint đi qua `readJson()` đang có, viết một nhánh "POST không body" riêng là
+        thêm một đường đi chưa ai test. FE gửi `{}`.
+
+        Gọi hai lần liên tiếp thật nhanh: lần 2 thấy `status = "posting"` → `409
+        RECEIPT_STATE_INVALID`. Không có đường nào tạo 2 job cho cùng một phiếu.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ReceiptIdPath'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, description: "Bỏ qua hoàn toàn. Gửi {}." }
+            example: {}
+      responses:
+        '202':
+          description: Đã đưa lại vào hàng đợi outbox. **Chưa** gửi SAP tại thời điểm này.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receiptId, status, attempts, nextAttemptAt, serverTime]
+                properties:
+                  receiptId: { type: string }
+                  status: { $ref: '#/components/schemas/ReceiptStatus' }
+                  attempts: { type: integer, minimum: 0, description: 'Đã reset về `0`.' }
+                  nextAttemptAt: { type: string, format: date-time }
+                  serverTime: { type: string, format: date-time }
+              example:
+                receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                status: posting
+                attempts: 0
+                nextAttemptAt: '2026-09-21T15:00:00.000Z'
+                serverTime: '2026-09-21T15:00:00.000Z'
+        '404':
+          $ref: '#/components/responses/Err404'
+        '409':
+          $ref: '#/components/responses/Err409'
+        '415':
+          $ref: '#/components/responses/Err415'
+
+  /api/receipts/{receiptId}/cancel:
+    post:
+      operationId: cancelReceipt
+      tags: [receipts]
+      summary: Huỷ một phiếu
+      description: |
+        **Huỷ được từ:** `confirmed`, `posting`, `posted`, `post_failed`, `rejected`, `corrected`.
+        **Không huỷ được từ:** `cancelled` (đã huỷ), `superseded` (đóng băng) → `409
+        RECEIPT_STATE_INVALID` với `details = {current, allowed: [...]}`.
+
+        Side-effect, trong **một** transaction:
+
+        1. `DELETE` dòng `outbox` `kind='post'` của phiếu nếu còn (huỷ thì đừng gửi nữa).
+        2. `receipts.status = 'cancelled'`, `receipts.cancel_reason = <reason>`.
+        3. Ghi `receipt_events (receipt.cancelled, actor.kind = "operator")`.
+        4. Nếu trước đó là `posted` **và** `SAP_ADAPTER=mock`: tạo `outbox` mới `kind='reversal'`
+           và ghi `receipt.reversal_queued`.
+
+        `sapDocumentNo` **không bị xoá** khi huỷ — chứng từ đã tồn tại trong SAP, reversal là một
+        chứng từ **khác**. Job reversal chạy xong **không** đổi `status` (vẫn `cancelled`), chỉ ghi
+        thêm `receipt.reversal_posted` hoặc `receipt.reversal_failed`.
+
+        Cạnh tranh với worker: nếu người dùng huỷ **trong lúc** SAP đang chạy, lần ghi kết quả của
+        worker thấy phiếu đã `cancelled` và **bỏ qua** (log `outbox.stale_result`). Hệ quả quan sát
+        được: SAP mock đã nhận phiếu nhưng phiếu ở `cancelled` không có `sapDocumentNo` — hành vi
+        **đúng và có chủ ý** cho một hệ mô phỏng.
+
+        **Không idempotent** (khác với `retry-post`): huỷ hai lần là hai lần huỷ, lần hai trả 409.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ReceiptIdPath'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: 'Sau `trim` dài 1..200 ký tự. Thiếu/rỗng/quá dài → `400 INVALID_BODY` với `details.field = "reason"`.'
+            example: { reason: Nhập nhầm pallet }
+      responses:
+        '200':
+          description: Đã huỷ. Body là object phiếu **đầy đủ**, thêm key `reversalQueued`.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Receipt'
+                  - type: object
+                    required: [reversalQueued]
+                    properties:
+                      reversalQueued:
+                        type: boolean
+                        description: |
+                          `true` **chỉ khi** phiếu trước đó ở `posted` (có `sapDocumentNo`) và
+                          `SAP_ADAPTER=mock`. Field này **chỉ có** trên response của endpoint này.
+              example:
+                receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                status: cancelled
+                cancelReason: Nhập nhầm pallet
+                sapDocumentNo: '5000000001'
+                supersedesReceiptId: null
+                supersededByReceiptId: null
+                rejectCode: null
+                postAttempts: 1
+                reversalQueued: true
+        '400':
+          $ref: '#/components/responses/Err400'
+        '404':
+          $ref: '#/components/responses/Err404'
+        '409':
+          $ref: '#/components/responses/Err409'
+        '415':
+          $ref: '#/components/responses/Err415'
+        '422':
+          $ref: '#/components/responses/Err422'
+
+  /api/receipts/{receiptId}/correct:
+    post:
+      operationId: correctReceipt
+      tags: [receipts]
+      summary: Sửa một phiếu bằng cách tạo phiếu mới thay thế
+      description: |
+        Sửa **không bao giờ ghi đè**: tạo một phiếu **mới** với `supersedesReceiptId = <id cũ>` ở
+        trạng thái `corrected`; phiếu cũ chuyển `superseded` và đóng băng. Kho cần biết đã từng
+        nhập sai cái gì.
+
+        **Sửa được từ:** `confirmed`, `posting`, `post_failed`, `rejected`, `corrected`
+        (chuỗi `A → B → C` là hợp lệ, mỗi bước một cặp `supersedes`/`supersededBy`).
+        **Không sửa được từ:** `posted` (đã có chứng từ SAP → phải `cancel` rồi nhập phiếu mới),
+        `cancelled`, `superseded` → `409 RECEIPT_STATE_INVALID`.
+
+        `recognitionId`, `imageId`, `imageUrl`, `source` của phiếu mới **sao chép nguyên** từ phiếu
+        cũ: ảnh nhãn không đổi khi người ta sửa số lượng, bắt chụp lại là vô lý. `deviceId` và
+        `sessionId` lấy từ **header của request này**, không phải của phiếu cũ.
+
+        `requestId` mới là **bắt buộc và phải khác** `requestId` của phiếu cũ (khoá idempotency —
+        hai phiếu khác nhau không được dùng chung); trùng → `409 REQUEST_ID_CONFLICT`.
+
+        **Thao tác sửa BỎ QUA rule trùng nhãn** — phiếu mới gần như chắc chắn trùng nhãn với phiếu
+        cũ mà nó thay thế. Rule vị trí (`LOCATION_UNKNOWN`) thì **vẫn áp dụng**.
+
+        Side-effect, tất cả trong **MỘT** transaction SQLite: `INSERT` phiếu mới → `UPDATE` phiếu cũ
+        → `DELETE` outbox `kind='post'` của phiếu cũ → `INSERT` outbox cho phiếu mới (nếu
+        `SAP_ADAPTER != 'none'`) → ghi **hai** dòng `receipt_events` (`receipt.corrected` cho phiếu
+        mới, `receipt.superseded` cho phiếu cũ).
+
+        Ảnh của phiếu `superseded` **không** bị xoá; phiếu cũ và phiếu mới dùng chung `imageId`.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/ReceiptIdPath'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, data]
+              properties:
+                requestId: { $ref: '#/components/schemas/RequestIdBody' }
+                data: { $ref: '#/components/schemas/ReceiptData' }
+                fieldMeta: { $ref: '#/components/schemas/FieldMeta' }
+                reason:
+                  type: [string, 'null']
+                  maxLength: 200
+                  description: 'Trim 0..200; vắng hoặc rỗng → `null`.'
+            example:
+              requestId: 0f5b1f34-1d9e-4c9a-9a54-6d2bb2f19a99
+              data:
+                partNumber: BEX32181030AB
+                partName: BATTERY_PACK_REAR_FENDER
+                quantity: 78
+                shipmentDate: '2026-09-15'
+                supplier: Nội bộ — Made in Vietnam
+                location: A-03-02
+                batch: null
+                saNumber: null
+                variant: null
+                plantDock: null
+                grossWeight: 12.5
+                packaging: null
+                note: null
+              fieldMeta: {}
+              reason: Đếm lại còn 78
+      responses:
+        '201':
+          description: Phiếu **mới** thay thế phiếu cũ
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Receipt' }
+              example:
+                receiptId: 9a77e3b2-0c41-4d55-b8e2-77f1c0a9d301
+                requestId: 0f5b1f34-1d9e-4c9a-9a54-6d2bb2f19a99
+                recognitionId: 218e4142-7a3b-4c11-9f0e-1b2c3d4e5f60
+                imageId: 4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12
+                imageUrl: /api/images/4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12
+                source: camera
+                status: corrected
+                supersedesReceiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                supersededByReceiptId: null
+                sapDocumentNo: null
+                rejectCode: null
+                postAttempts: 0
+                cancelReason: null
+        '400':
+          $ref: '#/components/responses/Err400'
+        '404':
+          $ref: '#/components/responses/Err404'
+        '409':
+          $ref: '#/components/responses/Err409'
+        '415':
+          $ref: '#/components/responses/Err415'
+        '422':
+          $ref: '#/components/responses/Err422'
+
+  # ──────────────── PHASE 4 — danh mục dữ liệu chủ ────────────────
+  # Cả ba GET dưới đây ĐI QUA sim middleware bình thường (bị `backend.mode=down` chặn, chịu
+  # `latencyMs`). Chỉ /api/status và /api/admin/* được miễn trừ — đây là chủ ý: mất máy chủ thì
+  # danh mục cũng không tải được, và màn hình S1/S4 phải xử lý được điều đó.
+
+  /api/master/locations:
+    get:
+      operationId: listLocations
+      tags: [master]
+      summary: Danh mục vị trí kho
+      description: |
+        Nguồn dữ liệu: `apps/server/src/master-data/locations.csv` (≥ 50 dòng), nạp **một lần lúc
+        khởi động** vào RAM. Env `MASTER_DIR` trỏ đi chỗ khác được. Danh mục nằm trong `src/`
+        **chứ không** trong `DATA_DIR` vì nó là **mã nguồn tĩnh** (versioned), và vì mọi test dùng
+        `DATA_DIR` tạm trong `/tmp` — để ở đó thì danh mục sẽ rỗng và rule vị trí không chạy được.
+
+        File hỏng / không tồn tại → log `warn "master.load_failed"`, danh mục là mảng rỗng,
+        **không ném lỗi, không chặn khởi động**. Khi danh mục rỗng hoặc chưa nạp được, rule vị trí
+        **fail-open** (cho qua): một file CSV thiếu không được phép làm cả kho ngừng nhập hàng.
+
+        Sắp xếp `code` tăng dần. Header response vẫn `cache-control: no-store` như mọi endpoint khác.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: |
+            Khớp theo **substring**, **không phân biệt hoa/thường**, trên `code` **hoặc** `zone`.
+            Dài quá 40 ký tự → `400 INVALID_QUERY` với `details.field = "q"`.
+          schema: { type: string, maxLength: 40 }
+        - name: limit
+          in: query
+          required: false
+          description: Số bản ghi tối đa. Mặc định **50**, trần 200.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: includeInactive
+          in: query
+          required: false
+          description: 'Mặc định "false" → chỉ trả vị trí có active: true.'
+          schema: { type: string, enum: ['true', 'false'], default: 'false' }
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Danh mục vị trí
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, truncated, serverTime]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/MasterLocation' }
+                  total:
+                    type: integer
+                    minimum: 0
+                    description: Số vị trí khớp **trước khi** cắt theo `limit`.
+                  truncated:
+                    type: boolean
+                    description: '`total > items.length`.'
+                  serverTime: { type: string, format: date-time }
+              example:
+                items:
+                  - { code: A-03-02, zone: A, name: Khu A · Kệ 03 · Tầng 02, active: true }
+                  - { code: A-03-03, zone: A, name: Khu A · Kệ 03 · Tầng 03, active: true }
+                total: 2
+                truncated: false
+                serverTime: '2026-09-21T14:12:00.000Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/master/warehouses:
+    get:
+      operationId: listWarehouses
+      tags: [master]
+      summary: Danh mục kho
+      description: |
+        Không có tham số. Nguồn: `apps/server/src/master-data/warehouses.json`.
+
+        **FE gửi `name`, không gửi `code`.** `POST /api/sessions/start` của Phase 3 nhận
+        `warehouse` là chuỗi tự do 1..80 và đã lưu như vậy trong DB thật; Phase 4 **không đổi**
+        hợp đồng đó. `code` chỉ để FE làm `key` của React và để Phase 7 ánh xạ sang mã plant của SAP.
+
+        Màn hình S1 có **danh sách dự phòng hard-code** (`Kho Long Biên`, `Kho Hải Dương`) dùng khi
+        endpoint này hỏng — người vận hành vẫn vào ca được.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Danh mục kho
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, serverTime]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/MasterWarehouse' }
+                  serverTime: { type: string, format: date-time }
+              example:
+                items:
+                  - { code: LB, name: Kho Long Biên, active: true }
+                  - { code: HD, name: Kho Hải Dương, active: true }
+                  - { code: TL, name: Kho Thăng Long, active: false }
+                serverTime: '2026-09-21T14:12:00.000Z'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/master/shifts:
+    get:
+      operationId: listShifts
+      tags: [master]
+      summary: Danh mục ca làm việc
+      description: |
+        Không có tham số. Nguồn: `apps/server/src/master-data/shifts.json`.
+
+        `code` **bắt buộc** đúng 3 giá trị `sang | chieu | dem` — trùng khít hằng `SHIFTS` trong
+        `apps/server/src/sessions.js` (Phase 3, đóng băng). Sai là `POST /api/sessions/start` sẽ
+        trả `400 INVALID_BODY`.
+
+        `startsAt`/`endsAt` là chuỗi `HH:MM` **giờ địa phương**, chỉ để hiển thị; server không dùng
+        chúng để suy ra ca hiện tại.
+      x-status: phase-4
+      x-phase: 4
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Danh mục ca
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, serverTime]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/MasterShift' }
+                  serverTime: { type: string, format: date-time }
+              example:
+                items:
+                  - { code: sang, name: Ca sáng, startsAt: '06:00', endsAt: '14:00' }
+                  - { code: chieu, name: Ca chiều, startsAt: '14:00', endsAt: '22:00' }
+                  - { code: dem, name: Ca đêm, startsAt: '22:00', endsAt: '06:00' }
+                serverTime: '2026-09-21T14:12:00.000Z'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  # ──────────────────── PHASE 5 — sổ sự kiện và màn hình giám sát ────────────────────
+
+  /api/devices/{deviceId}/events:
+    post:
+      operationId: postDeviceEvents
+      tags: [devices]
+      summary: PDA báo lô sự kiện quan sát lên máy chủ (1–20 sự kiện mỗi lô)
+      description: |
+        Nguồn của các dòng `device.*` trên màn hình giám sát S9. Đây là endpoint **ghi** mới duy
+        nhất của Phase 5 nằm ngoài `/api/admin/`, nên nó **chịu** sim middleware như mọi endpoint
+        ghi khác: `backend.mode = "readonly"` chặn nó bằng `503 BACKEND_READONLY`. Khi bị chặn,
+        FE **bỏ luôn** lô sự kiện đó — không xếp hàng, không retry (mất vài dòng nhật ký quan sát
+        không đáng để làm nhiễu hàng chờ phiếu).
+
+        **Cả lô hoặc không gì cả.** Toàn bộ `events[]` được kiểm **trước** khi ghi; một phần tử
+        sai `type` → `400 INVALID_EVENT_TYPE` và **không dòng nào** được ghi. Ghi một phần rồi
+        báo lỗi sẽ khiến FE không biết phải gửi lại từ đâu.
+
+        `events[].at` là giờ **của client**: nó đi vào cột `system_events.client_at` và chỉ để
+        tham khảo. Cột `at` **luôn** là giờ server. `at` sai định dạng → bỏ qua, không báo lỗi.
+
+        **Về `404 DEVICE_NOT_FOUND`** (đọc từ code, không chép từ spec): khi request có header
+        `x-device-id`, middleware `devices.touch()` đã tự đăng ký ngầm thiết bị **trước khi**
+        handler chạy. Vì vậy `404` chỉ xảy ra khi client **không** gửi `x-device-id` và
+        `:deviceId` trên đường dẫn chưa có trong bảng `devices`.
+
+        Lệch `x-device-id` với `:deviceId` cho **`400 DEVICE_ID_MISMATCH`** (không phải `409`).
+      x-status: phase-5
+      parameters:
+        - $ref: '#/components/parameters/DeviceIdPath'
+        - $ref: '#/components/parameters/XDeviceId'
+        - $ref: '#/components/parameters/XSessionId'
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceEventBatch' }
+            example:
+              events:
+                - type: device.camera_error
+                  at: '2026-09-22T03:14:05.100Z'
+                  detail: { name: NotAllowedError }
+                - type: device.queue_enqueued
+                  detail: { reason: OFFLINE, size: 3 }
+      responses:
+        '202':
+          description: |
+            Đã nhận cả lô. `202` chứ không `201`: sự kiện chỉ là quan sát, không tạo tài nguyên
+            mà client cần tham chiếu lại.
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted, rejected, serverTime]
+                additionalProperties: false
+                properties:
+                  accepted:
+                    type: integer
+                    minimum: 0
+                    maximum: 20
+                    description: 'Số dòng thật sự ghi vào `system_events`. `EVENTS_ENABLED=false` hoặc lỗi ghi DB → `0` (sổ quan sát không bao giờ làm chết request nghiệp vụ).'
+                  rejected:
+                    type: integer
+                    const: 0
+                    description: '**Luôn `0`** ở Phase 5 — lô có phần tử sai đã thành `400` trước đó, không có đường nào nhận một phần.'
+                  serverTime: { type: string, format: date-time }
+              example: { accepted: 2, rejected: 0, serverTime: '2026-09-21T20:48:45.684Z' }
+        '400':
+          $ref: '#/components/responses/Err400'
+        '404':
+          $ref: '#/components/responses/Err404'
+        '503':
+          $ref: '#/components/responses/Err503'
+
+  /api/admin/events:
+    get:
+      operationId: listSystemEvents
+      tags: [admin]
+      summary: Đọc sổ sự kiện toàn hệ thống theo con trỏ tăng dần
+      description: |
+        Nguồn dữ liệu của khối «Dòng sự kiện» trên màn hình giám sát S9. Nằm dưới `/api/admin/`
+        nên được sim middleware **miễn trừ hoàn toàn**: monitor phải sống được đúng lúc
+        `backend.mode = "down"` — nếu không thì nó vô dụng ở đúng tình huống cần nó nhất.
+
+        **`items` luôn theo `id` TĂNG DẦN** (cũ trước, mới sau). Đây là một *luồng*: client giữ
+        `lastId` rồi nối thêm vào cuối danh sách đang có. Hai nhánh, hai câu SQL, cùng một thứ tự
+        đầu ra:
+
+        ```sql
+        -- since = 0  →  "cho tôi limit dòng MỚI NHẤT", rồi đảo lại cho tăng dần
+        SELECT * FROM (SELECT * FROM system_events ORDER BY id DESC LIMIT :limit) ORDER BY id ASC;
+        -- since > 0  →  nối tiếp từ con trỏ
+        SELECT * FROM system_events WHERE id > :since ORDER BY id ASC LIMIT :limit;
+        ```
+
+        `items` rỗng → `lastId` **bằng đúng `since` mà client gửi**, không phải `0`. Trả `0` sẽ
+        làm monitor tải lại cả dòng sự kiện sau mỗi nhịp poll.
+
+        **MẤT DÒNG do vòng xoay — `oldestId`.** `system_events` là bảng VÒNG XOAY: vượt
+        `EVENTS_MAX_ROWS` thì dòng cũ bị `DELETE`. Một client tụt lại quá xa sẽ thấy con trỏ
+        `since` của mình đã bị cắt qua, và những dòng ở giữa **mất vĩnh viễn**. `oldestId` là
+        `MIN(id)` của cả bảng, có mặt trong **mọi** response để client tự phát hiện:
+
+        ```
+        # chỉ áp dụng khi since > 0 (since = 0 là "cho tôi limit dòng mới nhất", không phải con trỏ)
+        biên  = items rỗng ? oldestId : min(oldestId, id nhỏ nhất trong items)
+        mất   = max(0, biên - since - 1)
+        ```
+
+        `id` là `INTEGER PRIMARY KEY AUTOINCREMENT` và bảng chỉ INSERT, nên dãy `id` liền mạch
+        và `mất` là **số dòng thật sự đã bị cắt**, không phải ước lượng. `oldestId = 0` ⇒ không
+        kết luận gì. Webapp hiện con số này thành một dòng cảnh báo trên khối «Dòng sự kiện»
+        (`apps/webapp/src/lib/monitorFeed.js` → `countLostEvents`, `feedGapText`).
+
+        **Nết khoan dung:** `limit` ngoài khoảng → kẹp về biên; `type`, `severity`, `deviceId`
+        sai → **bỏ bộ lọc đó**, không báo lỗi. Chỉ `since` sai mới là `400 INVALID_SINCE`, vì
+        `since` hỏng nghĩa là client đang phân trang sai và sẽ lặng lẽ bỏ sót sự kiện.
+
+        `EVENTS_ENABLED=false` → `items: []`, `lastId` = `since`, `hasMore: false`, `oldestId: 0`.
+      x-status: phase-5
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: 'Chỉ trả các dòng có `id > since`. Mặc định `0` nghĩa là "cho tôi `limit` dòng mới nhất". Không phải số nguyên ≥ 0 → `400 INVALID_SINCE`.'
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          required: false
+          description: Ngoài khoảng thì kẹp về biên, không báo lỗi.
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: type
+          in: query
+          required: false
+          description: |
+            Lọc **khớp chính xác**. Nhiều loại thì lặp `&type=`, ngăn bằng dấu phẩy, hoặc trộn cả
+            hai: `?type=recognition.failed,receipt.posted&type=sim.updated`. Loại không có thật
+            chỉ làm kết quả rỗng, không báo lỗi.
+          schema: { type: string }
+        - name: severity
+          in: query
+          required: false
+          description: Giá trị lạ → bỏ bộ lọc.
+          schema: { $ref: '#/components/schemas/EventSeverity' }
+        - name: deviceId
+          in: query
+          required: false
+          description: Không phải UUID v4 → bỏ bộ lọc.
+          schema: { type: string }
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Một trang của sổ sự kiện, sắp xếp `id` tăng dần
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, lastId, hasMore, oldestId, serverTime]
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SystemEvent' }
+                  lastId:
+                    type: integer
+                    minimum: 0
+                    description: '`id` lớn nhất trong `items`; `items` rỗng → bằng `since` client gửi.'
+                  hasMore:
+                    type: boolean
+                    description: Còn dòng thoả điều kiện sau `lastId` — client nên poll lại ngay thay vì chờ hết nhịp.
+                  oldestId:
+                    type: integer
+                    minimum: 0
+                    description: |
+                      `MIN(id)` của **cả bảng** `system_events` — dòng cũ nhất vòng xoay còn giữ.
+                      **Không** chịu ảnh hưởng của `type` / `severity` / `deviceId`: vòng xoay cắt
+                      theo bảng chứ không theo bộ lọc.
+
+                      `0` nghĩa là **bảng rỗng hoặc máy chủ không đọc được** — client KHÔNG được
+                      kết luận đã mất dòng trong trường hợp này.
+                  serverTime: { type: string, format: date-time }
+              example:
+                items:
+                  - id: 3
+                    at: '2026-09-21T20:48:45.681Z'
+                    type: device.camera_error
+                    severity: warn
+                    deviceId: 996fd7be-d02b-411f-bc93-f11f68af9a0b
+                    sessionId: null
+                    receiptId: null
+                    recognitionId: null
+                    clientAt: '2026-09-22T03:14:05.100Z'
+                    detail: { name: NotAllowedError }
+                  - id: 4
+                    at: '2026-09-21T20:48:45.681Z'
+                    type: device.queue_enqueued
+                    severity: warn
+                    deviceId: 996fd7be-d02b-411f-bc93-f11f68af9a0b
+                    sessionId: null
+                    receiptId: null
+                    recognitionId: null
+                    clientAt: null
+                    detail: { reason: OFFLINE, size: 3 }
+                lastId: 4
+                hasMore: false
+                oldestId: 1
+                serverTime: '2026-09-21T20:48:50.994Z'
+        '400':
+          $ref: '#/components/responses/Err400'
+
+  /api/admin/recognitions:
+    get:
+      operationId: listAdminRecognitions
+      tags: [admin]
+      summary: Hàng đợi nhận dạng cho màn hình giám sát
+      description: |
+        Nguồn dữ liệu của khối «Hàng đợi nhận dạng» trên S9. Cũng được sim middleware miễn trừ
+        như mọi route `/api/admin/*`.
+
+        Trả **mới-nhất-trước** — đây là một *danh sách* người đọc, không phải luồng như
+        `GET /api/admin/events`.
+
+        `counts` đếm **toàn bộ bảng** `recognitions`, không chỉ trang hiện tại, nên nó **không**
+        thay đổi theo `limit` hay `status`.
+
+        Endpoint này cố ý **không** trả `fields` / `rawText`: người giám sát không cần dữ liệu
+        nhãn, và đó là dữ liệu nghiệp vụ.
+
+        Mọi tham số đều khoan dung: `status` lạ → bỏ bộ lọc; `limit` ngoài khoảng → kẹp về biên.
+        Không có nhánh lỗi `400` nào.
+      x-status: phase-5
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Không lọc nếu vắng mặt hoặc giá trị ngoài 3 giá trị hợp lệ.
+          schema: { type: string, enum: [pending, completed, failed] }
+        - name: limit
+          in: query
+          required: false
+          description: Ngoài khoảng thì kẹp về biên.
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Trang mới-nhất-trước kèm bộ đếm toàn bảng
+          headers:
+            x-request-id:
+              $ref: '#/components/headers/XRequestIdOut'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, counts, serverTime]
+                additionalProperties: false
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminRecognition' }
+                  counts:
+                    type: object
+                    required: [pending, completed, failed]
+                    additionalProperties: false
+                    description: Đếm toàn bảng `recognitions`, độc lập với `status` và `limit`.
+                    properties:
+                      pending: { type: integer, minimum: 0 }
+                      completed: { type: integer, minimum: 0 }
+                      failed: { type: integer, minimum: 0 }
+                  serverTime:
+                    type: string
+                    format: date-time
+                    description: Lấy **một lần** và dùng chung cho cả `ageMs`, để `ageMs` đúng bằng `serverTime - createdAt`.
+              example:
+                items:
+                  - recognitionId: 73c1bef9-e6dd-4348-af4c-fe78f04fddd0
+                    status: pending
+                    provider: mock
+                    deviceId: 996fd7be-d02b-411f-bc93-f11f68af9a0b
+                    sessionId: null
+                    imageId: b5d30685-f798-4e97-8fc4-defc1ec2f6c9
+                    createdAt: '2026-09-21T20:49:11.864Z'
+                    finishedAt: null
+                    durationMs: null
+                    ageMs: 13
+                    fieldsFound: 0
+                    errorCode: null
+                counts: { pending: 1, completed: 0, failed: 0 }
+                serverTime: '2026-09-21T20:49:11.877Z'
+
+  # ─────────────────────────────── CHƯA TRIỂN KHAI ───────────────────────────────
+
+  /api/events:
+    get:
+      operationId: streamEvents
+      tags: [status]
+      summary: Dòng sự kiện realtime cho màn hình giám sát (SSE)
+      description: |
+        **CHƯA TRIỂN KHAI** — đã **hoãn sang Phase 6** (QUYẾT ĐỊNH O-1 của
+        `docs/specs/phase-5/00-overview.md`). Phase 5 dùng **polling**, không dùng SSE: màn hình
+        giám sát S9 đọc `GET /api/admin/events?since=` theo con trỏ tăng dần. Vì con trỏ đã tăng
+        dần đơn điệu, nâng lên SSE sau này **không** phải đổi shape dữ liệu.
+
+        `text/event-stream`. Mỗi sự kiện là một dòng `data:` chứa JSON. PDA sẽ vẫn dùng poll
+        `GET /api/status` (đơn giản hơn, chịu được mạng kho chập chờn).
+      x-status: planned
+      x-phase: 6
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: Chỉ gửi sự kiện sau mốc thời gian này.
+          schema: { type: string, format: date-time }
+        - $ref: '#/components/parameters/XRequestId'
+      responses:
+        '200':
+          description: Luồng sự kiện
+          content:
+            text/event-stream:
+              schema: { type: string }
+              example: |
+                event: device.status
+                data: {"deviceId":"0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511","status":"stale","at":"2026-09-21T14:06:05.000Z"}
+
+                event: receipt.posted
+                data: {"receiptId":"c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77","sapDocumentNo":"5000123456","at":"2026-09-21T14:10:21.004Z"}
+
+components:
+
+  parameters:
+
+    XDeviceId:
+      name: x-device-id
+      in: header
+      required: false
+      description: |
+        Định danh cài đặt webapp trên thiết bị. FE sinh **một lần** bằng `crypto.randomUUID()` và lưu
+        `localStorage["pdaScan.deviceId"]`. Bắt buộc theo cờ `REQUIRE_DEVICE_ID` (mặc định `false` ở
+        Phase 3). BE **không** tự lowercase: chữ hoa → `400 INVALID_DEVICE_ID`.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        example: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+
+    XSessionId:
+      name: x-session-id
+      in: header
+      required: false
+      description: |
+        Phiên làm việc hiện tại (tuỳ chọn ở Phase 3). Gửi id của phiên **đã kết thúc** không bị báo
+        lỗi; BE chỉ ghi `session_id` như cũ. FE nên tự xoá phiên quá 12 giờ.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        example: 6a1f0f0d-3cc4-4b26-9a2e-1e8be2b1c7a4
+
+    XRequestId:
+      name: x-request-id
+      in: header
+      required: false
+      description: |
+        Khoá **truy vết** một lần gọi mạng, xuyên FE → BE → ai-server. FE sinh **mới ở mỗi attempt**,
+        kể cả khi retry cùng một `requestId` nghiệp vụ. Thiếu hoặc sai định dạng → BE tự sinh và
+        **không báo lỗi**. BE luôn trả lại header này.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{8,128}$'
+        example: 9f2a41c6-2e6b-4a13-b0a9-2f45a1f8b7c3
+
+    XAppVersion:
+      name: x-app-version
+      in: header
+      required: false
+      description: Version webapp, để BE ghi log. Tuỳ chọn.
+      schema: { type: string, maxLength: 32, example: 0.2.0 }
+
+    DeviceIdPath:
+      name: deviceId
+      in: path
+      required: true
+      description: Phải trùng `x-device-id` nếu header có mặt; khác → `400 DEVICE_ID_MISMATCH`.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+    SessionIdPath:
+      name: sessionId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+    RecognitionIdPath:
+      name: recognitionId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9a-f-]{36}$' }
+
+    ReceiptIdPath:
+      name: receiptId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9a-f-]{36}$' }
+
+    ImageIdPath:
+      name: imageId
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9a-f-]{36}$' }
+
+  headers:
+
+    XRequestIdOut:
+      description: Giá trị `x-request-id` của request (do FE gửi, hoặc do BE tự sinh).
+      schema: { type: string, pattern: '^[A-Za-z0-9_-]{8,128}$' }
+
+    RetryAfter:
+      description: Số **giây** (làm tròn lên) client nên chờ trước khi thử lại.
+      schema: { type: integer, minimum: 0 }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error]
+      additionalProperties: false
+      description: |
+        Shape lỗi duy nhất của toàn API. `details` **được phép vắng mặt**; khi vắng, key `details`
+        **không xuất hiện** (không phải `null`).
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              pattern: '^[A-Z][A-Z0-9_]*$'
+              description: UPPER_SNAKE_CASE, ổn định. Client rẽ nhánh theo đây.
+            message:
+              type: string
+              description: Tiếng Việt, hiển thị được cho người vận hành.
+            details:
+              type: object
+              description: Tuỳ mã lỗi. Ví dụ `{retryAfterMs, simulated}`, `{fields}`, `{deviceId}`.
+      examples:
+        - error:
+            code: DEVICE_NOT_FOUND
+            message: Thiết bị chưa đăng ký
+            details: { deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511 }
+
+    RequestIdBody:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{8,128}$'
+      description: |
+        Khoá **idempotency nghiệp vụ**. Client sinh khi bấm lưu và **giữ nguyên qua mọi lần retry**;
+        chỉ đổi khi người dùng sửa dữ liệu rồi lưu lại. Khác hẳn header `x-request-id`.
+
+    Health:
+      type: object
+      required: [ok, uptimeSec, provider, mockMode, simOverride, simSaveFail, db, receipts]
+      additionalProperties: false
+      properties:
+        ok: { type: boolean }
+        uptimeSec: { type: integer, minimum: 0 }
+        provider: { type: string, enum: [mock, http] }
+        mockMode:
+          type: [string, 'null']
+          enum: [success, slow, error, timeout, null]
+          description: '`null` khi `RECOGNITION_PROVIDER=http`.'
+        simOverride: { type: boolean }
+        simSaveFail: { type: boolean }
+        db: { type: string, enum: [ok, error] }
+        receipts: { type: integer, minimum: 0 }
+
+    FieldResult:
+      type: object
+      required: [value, confidence, raw, status]
+      additionalProperties: false
+      description: Một trường trong kết quả nhận dạng, **sau** khi BE đã ép kiểu và chuẩn hoá.
+      properties:
+        value:
+          description: Giá trị đã chuẩn hoá theo kiểu của `ReceiptData`, hoặc `null`.
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: |
+            **Hạ về 0** khi không chuẩn hoá được; **kẹp ≤ 0.5** khi mã (`partNumber`, `saNumber`)
+            đọc được nhưng sai định dạng — giữ giá trị để người dùng sửa một ký tự.
+        raw:
+          type: [string, 'null']
+          description: Chuỗi provider trả nguyên bản, để người dùng đối chiếu.
+        status:
+          type: string
+          enum: [ok, unparsed, missing]
+          description: '`ok` có value · `unparsed` có raw nhưng không đọc ra kiểu hợp lệ · `missing` provider không trả.'
+
+    RecognitionResult:
+      type: object
+      required: [recognitionId, status, provider, fields, warnings, error, image, durationMs, createdAt, finishedAt]
+      description: |
+        Phase 3 **thêm** `fieldsFound` và `requestId` (tương thích ngược — chỉ thêm field, không
+        đổi/xoá). `fieldsFound = 0` khi `status = "failed"` (không phải `null`).
+      properties:
+        recognitionId: { type: string }
+        status: { type: string, enum: [pending, completed, failed] }
+        provider: { type: string, enum: [mock, http] }
+        fieldsFound:
+          type: integer
+          minimum: 0
+          maximum: 13
+          description: |
+            Số field có `status === "ok"`. Khi `fieldsFound === 0` và `status === "completed"`,
+            `warnings` chứa đúng chuỗi `Không đọc được trường nào trên nhãn`.
+        fields:
+          type: [object, 'null']
+          description: Đủ **13 key** của schema; key nào cũng có mặt để FE không phải đoán.
+          additionalProperties: { $ref: '#/components/schemas/FieldResult' }
+        warnings:
+          type: array
+          items: { type: string }
+          description: Key lạ provider trả về (schema drift), hoặc cảnh báo nghiệp vụ.
+        error:
+          type: [object, 'null']
+          properties:
+            code: { type: string }
+            message: { type: string }
+        image:
+          type: object
+          required: [id, url]
+          properties:
+            id: { type: string }
+            url: { type: string, example: /api/images/4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12 }
+            mimeType: { type: string, enum: [image/jpeg, image/png, image/webp] }
+            bytes: { type: integer, minimum: 0 }
+        durationMs: { type: [integer, 'null'], minimum: 0 }
+        requestId: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+        pollUrl:
+          type: string
+          description: |
+            **Chỉ có ở body `202`** của `POST /api/recognitions` khi `RECOGNITION_MODE=async`;
+            `GET /api/recognitions/{recognitionId}` **không** trả key này. Giá trị bằng
+            `/api/recognitions/{recognitionId}`, trùng header `location`.
+        pollAfterMs:
+          type: integer
+          minimum: 200
+          maximum: 10000
+          description: '**Chỉ có ở body `202`.** Bằng `RECOGNITION_POLL_HINT_MS` (mặc định `1000`), trùng header `retry-after` (làm tròn lên giây).'
+      examples:
+        - recognitionId: 218e4142-7a3b-4c11-9f0e-1b2c3d4e5f60
+          status: completed
+          provider: http
+          fieldsFound: 8
+          fields:
+            partNumber: { value: BEX32181030AB, confidence: 0.94, raw: BEX32181030AB, status: ok }
+            quantity: { value: 80, confidence: 0.91, raw: '80', status: ok }
+            shipmentDate: { value: '2026-09-15', confidence: 0.62, raw: 15/9/2026, status: ok }
+            supplier: { value: null, confidence: 0, raw: Foxconn, status: unparsed }
+            location: { value: null, confidence: 0, raw: null, status: missing }
+          warnings: []
+          error: null
+          image: { id: 4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12, url: /api/images/4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12, mimeType: image/jpeg, bytes: 148213 }
+          durationMs: 702
+          requestId: 9f2a41c6-2e6b-4a13-b0a9-2f45a1f8b7c3
+          createdAt: '2026-09-21T14:10:00.000Z'
+          finishedAt: '2026-09-21T14:10:00.702Z'
+
+    ReceiptData:
+      type: object
+      required: [partNumber, partName, quantity, shipmentDate, supplier, location, batch, saNumber, variant, plantDock, grossWeight, packaging, note]
+      additionalProperties: false
+      description: |
+        **Đúng 13 key.** Nguồn sự thật: `apps/server/src/fields.js`. Trường tuỳ chọn không nhập →
+        `null`, **không bỏ key**. Client được gửi số dạng chuỗi (`"80"`, `"12,5"`); BE ép kiểu và
+        **lưu đúng kiểu** dưới đây.
+      properties:
+        partNumber:
+          type: [string, 'null']
+          pattern: '^[A-Z]{3}\d{8}[A-Z]{2,6}$'
+          description: Bắt buộc. Code — viết hoa, bỏ khoảng trắng. 3 chữ + 8 số + 2–6 chữ.
+        partName: { type: [string, 'null'], maxLength: 120, description: Bắt buộc. }
+        quantity: { type: [integer, 'null'], minimum: 1, description: Bắt buộc. JSON number thật. }
+        shipmentDate:
+          type: [string, 'null']
+          format: date
+          description: Bắt buộc. `YYYY-MM-DD`, phải là ngày **thật trên lịch**, năm 2000–2100.
+        supplier:
+          type: [string, 'null']
+          enum: [Nội bộ — Made in Vietnam, Jiangsu Tiemao Technology, Nhà cung cấp khác, null]
+          description: Bắt buộc. Kết quả nhận dạng được khớp qua alias (`VINFAST`, `Made in Vietnam`, `Tiemao`…).
+        location: { type: [string, 'null'], maxLength: 40, description: Bắt buộc. Code. }
+        batch: { type: [string, 'null'], maxLength: 40 }
+        saNumber: { type: [string, 'null'], pattern: '^\d{10}$' }
+        variant: { type: [string, 'null'], maxLength: 80 }
+        plantDock: { type: [string, 'null'], maxLength: 40 }
+        grossWeight: { type: [number, 'null'], minimum: 0 }
+        packaging:
+          type: [string, 'null']
+          enum: [Nguyên vẹn, Móp nhẹ, Rách hoặc ướt, Khác, null]
+        note: { type: [string, 'null'], maxLength: 1000 }
+
+    FieldMeta:
+      type: object
+      description: |
+        Provenance của từng trường. BE **lọc**: chỉ giữ key nằm trong schema, `via` ngoài enum →
+        `manual`, `confidence` kẹp về `0..1`.
+      additionalProperties:
+        type: object
+        required: [via, confidence, edited, proposed]
+        additionalProperties: false
+        properties:
+          via: { type: string, enum: [ai, scan, manual] }
+          confidence: { type: [number, 'null'], minimum: 0, maximum: 1 }
+          edited: { type: boolean }
+          proposed: { description: 'Giá trị AI/scan đề xuất ban đầu, hoặc `null`.' }
+
+    ReceiptCreate:
+      type: object
+      required: [requestId, source, data]
+      properties:
+        requestId: { $ref: '#/components/schemas/RequestIdBody' }
+        recognitionId:
+          type: [string, 'null']
+          description: '`null` khi nhập tay hoặc chỉ quét barcode. Được phép trỏ tới một recognition đã `failed`.'
+        source: { type: string, enum: [camera, barcode, manual] }
+        data: { $ref: '#/components/schemas/ReceiptData' }
+        fieldMeta: { $ref: '#/components/schemas/FieldMeta' }
+        allowDuplicate:
+          type: boolean
+          default: false
+          description: |
+            `true` = người vận hành đã xác nhận "vẫn lưu dù trùng nhãn". Kiểu sai (không phải
+            boolean) → `400 INVALID_BODY` với `details.field = "allowDuplicate"`. `false` tường
+            minh **không khác** vắng mặt.
+
+            **Không tham gia `payloadHash`** — hệ quả **cố ý**: gửi lại cùng `requestId` với
+            `allowDuplicate: true` sau khi bị `409 DUPLICATE_LABEL` không bị coi là "payload khác".
+            **Phase 4.**
+        client:
+          type: [object, 'null']
+          description: Metadata client, lưu nguyên văn.
+          properties:
+            submittedAt: { type: string, format: date-time }
+            userAgent: { type: string }
+
+    Receipt:
+      type: object
+      required:
+        - receiptId
+        - requestId
+        - recognitionId
+        - imageId
+        - imageUrl
+        - source
+        - data
+        - fieldMeta
+        - client
+        - createdAt
+        # bảy field vòng đời thêm ở Phase 4 — luôn có mặt, không bao giờ vắng
+        - status
+        - sapDocumentNo
+        - supersedesReceiptId
+        - supersededByReceiptId
+        - rejectCode
+        - postAttempts
+        - cancelReason
+      description: |
+        Bản ghi **đọc lại từ SQLite** sau khi ghi. Phase 3 thêm `deviceId`, `sessionId` (lấy từ
+        header, không lấy từ body). `idempotent` chỉ có mặt trên response của `POST /api/receipts`;
+        `reversalQueued` chỉ có mặt trên response của `POST /api/receipts/{receiptId}/cancel`.
+
+        **Phase 4 thêm 7 field vòng đời**, cả 7 **luôn có mặt** (không bao giờ vắng) trên mọi
+        response chứa một phiếu: `POST /api/receipts`, `GET /api/receipts/{receiptId}`, mỗi phần tử
+        `items[]` của `GET /api/receipts`, `POST .../cancel`, `POST .../correct`.
+
+        `sapMessage` (nguyên văn của SAP) **cố ý không có** ở đây — nó chỉ nằm trong
+        `receipt_events.detail` và trong log, để FE không hiển thị nhầm cho người vận hành.
+      properties:
+        receiptId: { type: string }
+        requestId: { type: string }
+        recognitionId: { type: [string, 'null'] }
+        imageId: { type: [string, 'null'] }
+        imageUrl: { type: [string, 'null'] }
+        source: { type: string, enum: [camera, barcode, manual] }
+        deviceId: { type: [string, 'null'], description: '`null` khi request không mang `x-device-id`.' }
+        sessionId: { type: [string, 'null'], description: '`null` khi request không mang `x-session-id`.' }
+        status:
+          allOf:
+            - $ref: '#/components/schemas/ReceiptStatus'
+          description: 'Trạng thái vòng đời hiện tại. **Không bao giờ `null`.** Phiếu vừa lưu luôn là `confirmed`. **Phase 4.**'
+        sapDocumentNo:
+          type: [string, 'null']
+          description: 'Số chứng từ SAP; chỉ khác `null` khi `status = "posted"` — và **giữ nguyên** sau khi phiếu bị huỷ. **Phase 4.**'
+          example: '5000000001'
+        supersedesReceiptId:
+          type: [string, 'null']
+          description: 'Phiếu này được tạo ra để **thay thế** phiếu nào. **Phase 4.**'
+        supersededByReceiptId:
+          type: [string, 'null']
+          description: 'Phiếu này **đã bị** phiếu nào thay thế. **Phase 4.**'
+        rejectCode:
+          type: [string, 'null']
+          description: 'Mã lỗi nghiệp vụ SAP; chỉ khác `null` khi `status = "rejected"`. **Phase 4.**'
+          example: SAP_PART_UNKNOWN
+        postAttempts:
+          type: integer
+          minimum: 0
+          description: |
+            Số lần đã gọi SAP cho phiếu này (`0` khi chưa gửi). Đọc từ `outbox.attempts`, hoặc từ
+            `receipts.post_attempts` khi job đã bị xoá (phiếu `posted`/`rejected`). **Phase 4.**
+        cancelReason:
+          type: [string, 'null']
+          description: 'Lý do huỷ; chỉ khác `null` khi `status = "cancelled"`. **Phase 4.**'
+        data: { $ref: '#/components/schemas/ReceiptData' }
+        fieldMeta: { $ref: '#/components/schemas/FieldMeta' }
+        client: { type: [object, 'null'] }
+        createdAt: { type: string, format: date-time }
+        idempotent: { type: boolean, description: '`true` ⇔ HTTP 200 (bản ghi đã tồn tại).' }
+
+    ReceiptStatus:
+      type: string
+      enum: [confirmed, posting, posted, post_failed, rejected, cancelled, corrected, superseded]
+      description: |
+        **Đúng 8 giá trị.** `draft` và `queued` (có trong bản 0.3.0 của file này và trong
+        `docs/receipt-lifecycle.md`) là trạng thái **chỉ tồn tại trên PDA ở Phase 5**; server
+        **không bao giờ** trả hai giá trị đó, và chúng đã bị gỡ khỏi enum ở bản 0.4.0.
+
+        | Giá trị | Nghĩa | Kết thúc? |
+        |---|---|---|
+        | `confirmed` | Đã nằm trong SQLite, chưa gửi SAP (hoặc chưa tới lượt) | không |
+        | `posting` | Đang gửi SAP, hoặc đang chờ lượt retry trong outbox | không |
+        | `posted` | SAP đã nhận, có `sapDocumentNo` | gần như — chỉ rời đi được khi bị huỷ |
+        | `post_failed` | Hết lượt vì lỗi **kỹ thuật**. Dữ liệu vẫn đúng | không |
+        | `rejected` | SAP từ chối vì lỗi **nghiệp vụ**. Gửi lại y hệt sẽ hỏng y hệt | không |
+        | `cancelled` | Người vận hành đã huỷ | **có** |
+        | `corrected` | Phiếu **mới** sinh ra từ thao tác "Sửa", có `supersedesReceiptId` | không |
+        | `superseded` | Phiếu **cũ** đã bị một phiếu `corrected` thay thế. Đóng băng | **có** |
+
+        Chi tiết state machine: `docs/receipt-lifecycle.md`.
+
+    ReceiptCounts:
+      type: object
+      required: [total, byStatus]
+      additionalProperties: false
+      description: |
+        Đếm theo trạng thái cho các chip lọc của màn hình S6 và ô số của S2. Tính trên **cùng bộ
+        lọc `sessionId` + `deviceId`** nhưng **bỏ qua** `status`, `limit`, `cursor`. **Phase 4.**
+      properties:
+        total: { type: integer, minimum: 0, description: 'Tổng 8 giá trị của `byStatus`.' }
+        byStatus:
+          type: object
+          required: [confirmed, posting, posted, post_failed, rejected, cancelled, corrected, superseded]
+          additionalProperties: false
+          description: '**Luôn đủ 8 key**, giá trị `0` khi không có phiếu nào. Không bao giờ vắng key.'
+          properties:
+            confirmed: { type: integer, minimum: 0 }
+            posting: { type: integer, minimum: 0 }
+            posted: { type: integer, minimum: 0 }
+            post_failed: { type: integer, minimum: 0 }
+            rejected: { type: integer, minimum: 0 }
+            cancelled: { type: integer, minimum: 0 }
+            corrected: { type: integer, minimum: 0 }
+            superseded: { type: integer, minimum: 0 }
+
+    ReceiptEventName:
+      type: string
+      enum:
+        - receipt.confirmed
+        - receipt.duplicate_override
+        - receipt.posting
+        - receipt.posted
+        - receipt.post_retry
+        - receipt.post_failed
+        - receipt.rejected
+        - receipt.retry_requested
+        - receipt.cancelled
+        - receipt.reversal_queued
+        - receipt.reversal_posted
+        - receipt.reversal_failed
+        - receipt.corrected
+        - receipt.superseded
+        - receipt.swept
+      description: |
+        **Đúng 15 tên sự kiện ổn định.** Khác với `to` vì một trạng thái có thể vào từ nhiều sự
+        kiện (`posting` vào từ `receipt.posting` lẫn `receipt.retry_requested`).
+
+        | `event` | `from` → `to` | `actor.kind` | `detail` chứa |
+        |---|---|---|---|
+        | `receipt.confirmed` | `null` → `confirmed` | `device` | `{source, requestId, fieldsEdited}` |
+        | `receipt.duplicate_override` | `confirmed` → `confirmed` | `device` | `{existingReceiptId, key}` |
+        | `receipt.posting` | `confirmed\|corrected\|post_failed\|posting` → `posting` | `system` | `{attempt}` |
+        | `receipt.posted` | `posting` → `posted` | `system` | `{sapDocumentNo, postedAt, attempt}` |
+        | `receipt.post_retry` | `posting` → `posting` | `system` | `{attempt, code, nextAttemptAt, delayMs}` |
+        | `receipt.post_failed` | `posting` → `post_failed` | `system` | `{attempt, code, lastError}` |
+        | `receipt.rejected` | `posting` → `rejected` | `system` | `{code, sapMessage, attempt}` |
+        | `receipt.retry_requested` | `post_failed` → `posting` | `operator` | `{}` |
+        | `receipt.cancelled` | bất kỳ → `cancelled` | `operator` | `{reason, hadSapDocumentNo}` |
+        | `receipt.reversal_queued` | `cancelled` → `cancelled` | `system` | `{sapDocumentNo}` |
+        | `receipt.reversal_posted` | `cancelled` → `cancelled` | `system` | `{sapDocumentNo, attempt}` |
+        | `receipt.reversal_failed` | `cancelled` → `cancelled` | `system` | `{sapDocumentNo, attempt, code}` |
+        | `receipt.corrected` | `null` → `corrected` | `operator` | `{supersedesReceiptId, reason}` — ghi cho phiếu **mới** |
+        | `receipt.superseded` | `<cũ>` → `superseded` | `operator` | `{supersededByReceiptId, reason}` — ghi cho phiếu **cũ** |
+        | `receipt.swept` | `posting` → `posting` | `system` | `{sweep, attempt}` |
+
+    ReceiptEvent:
+      type: object
+      required: [id, receiptId, at, from, to, event, actor, detail]
+      description: |
+        Một dòng của bảng `receipt_events` — nhật ký **chỉ INSERT** (không `UPDATE`, không `DELETE`,
+        không bao giờ). Mỗi chuyển trạng thái ghi **đúng một** dòng, trong **cùng transaction** với
+        `UPDATE receipts.status`. Hai dòng cho một lần chuyển nghĩa là worker đã chạy hai lần — đó
+        là bug cần thấy được. **Phase 4.**
+      properties:
+        id: { type: integer, description: 'Tăng dần; thứ tự `id` **là** thứ tự thời gian thật.' }
+        receiptId: { type: string }
+        at: { type: string, format: date-time, description: '**Server sinh.** Không bao giờ lấy giờ của PDA.' }
+        from:
+          type: [string, 'null']
+          description: 'Trạng thái trước; `null` **chỉ** ở sự kiện đầu tiên của phiếu.'
+        to: { $ref: '#/components/schemas/ReceiptStatus' }
+        event: { $ref: '#/components/schemas/ReceiptEventName' }
+        actor:
+          type: object
+          required: [kind, deviceId, sessionId]
+          additionalProperties: false
+          properties:
+            kind:
+              type: string
+              enum: [device, system, operator]
+              description: '`device` = PDA tự động · `operator` = người bấm nút · `system` = worker/sweep.'
+            deviceId: { type: [string, 'null'], description: '`null` khi `kind = "system"`.' }
+            sessionId: { type: [string, 'null'], description: '`null` khi `kind = "system"`.' }
+        detail:
+          type: object
+          description: |
+            **Luôn là object** (ít nhất `{}`), không bao giờ `null`. Chỉ chứa bối cảnh của lần
+            chuyển, **không** chứa dữ liệu nghiệp vụ (đã có trong `receipts.data`).
+
+    MasterLocation:
+      type: object
+      required: [code, zone, name, active]
+      additionalProperties: false
+      description: 'Một dòng của `master-data/locations.csv`. **Phase 4.**'
+      properties:
+        code: { type: string, example: A-03-02 }
+        zone: { type: string, example: A }
+        name: { type: string, example: Khu A · Kệ 03 · Tầng 02 }
+        active: { type: boolean, description: 'Cột CSV `1` → `true`, mọi giá trị khác → `false`.' }
+
+    MasterWarehouse:
+      type: object
+      required: [code, name, active]
+      additionalProperties: false
+      description: 'Một kho. FE gửi **`name`** lên `POST /api/sessions/start`, không gửi `code`. **Phase 4.**'
+      properties:
+        code: { type: string, example: LB }
+        name: { type: string, maxLength: 80, example: Kho Long Biên }
+        active: { type: boolean }
+
+    MasterShift:
+      type: object
+      required: [code, name, startsAt, endsAt]
+      additionalProperties: false
+      description: 'Một ca làm việc. **Phase 4.**'
+      properties:
+        code:
+          type: string
+          enum: [sang, chieu, dem]
+          description: |
+            **Không** nullable ở đây (khác `schemas.Shift` của `sessions`, nơi `null` là hợp lệ).
+            Ba giá trị này trùng khít hằng `SHIFTS` trong `apps/server/src/sessions.js`.
+        name: { type: string, example: Ca sáng }
+        startsAt: { type: string, pattern: '^[0-2][0-9]:[0-5][0-9]$', example: '06:00' }
+        endsAt: { type: string, pattern: '^[0-2][0-9]:[0-5][0-9]$', example: '14:00' }
+
+    Device:
+      type: object
+      required: [id, name, appVersion, platform, network, screen, status, lastSeenAgeMs, firstSeen, lastSeen, meta, battery, pendingQueue]
+      properties:
+        id: { type: string }
+        name: { type: [string, 'null'], minLength: 1, maxLength: 60 }
+        appVersion: { type: [string, 'null'], maxLength: 32 }
+        platform: { type: [string, 'null'], maxLength: 120 }
+        network: { $ref: '#/components/schemas/Network' }
+        screen: { type: [string, 'null'], maxLength: 16, description: 'Mã màn hình đang mở, ví dụ `S3`.' }
+        status:
+          type: string
+          enum: [online, stale, offline]
+          description: |
+            Tính tại thời điểm trả response: `age < 45000` → `online`; `age < 300000` → `stale`;
+            `age >= 300000` → `offline`.
+        lastSeenAgeMs: { type: integer, minimum: 0 }
+        firstSeen: { type: string, format: date-time }
+        lastSeen: { type: string, format: date-time }
+        meta: { type: object, description: 'JSON bất kỳ, serialize ≤ 4096 byte (vượt → lưu `{}`).' }
+        battery:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: |
+            **Phase 5.** Giá trị heartbeat gần nhất, là **tỉ lệ 0..1** (không phải phần trăm):
+            pin 12 % lưu thành `0.12`. Thiết bị chưa bao giờ báo pin → `null`.
+        pendingQueue:
+          type: integer
+          minimum: 0
+          description: |
+            **Phase 5.** Số phiếu đang nằm trong hàng chờ ngoại tuyến của thiết bị, do chính
+            thiết bị tự khai trong heartbeat. Thiết bị mất mạng thì con số này **đứng yên** —
+            nó chỉ nhảy lên khi có mạng trở lại và heartbeat tới được máy chủ.
+
+    DeviceListItem:
+      allOf:
+        - $ref: '#/components/schemas/Device'
+        - type: object
+          required: [activeSessionId, sim, session, receiptsInSession]
+          properties:
+            activeSessionId: { type: [string, 'null'] }
+            sim:
+              type: object
+              required: [hasOverride]
+              properties:
+                hasOverride: { type: boolean, description: Có dòng `sim_state` scope `device:<id>` hay không. }
+            session:
+              description: |
+                **Phase 5.** Tóm tắt phiên đang mở, để màn hình giám sát khỏi phải gọi thêm
+                `GET /api/sessions/:id` cho từng dòng. Không có phiên đang mở → `null`.
+                Trùng thông tin với `activeSessionId` là **có chủ ý**.
+              oneOf:
+                - type: object
+                  required: [id, operator, warehouse, shift, startedAt]
+                  additionalProperties: false
+                  properties:
+                    id: { type: string }
+                    operator: { type: [string, 'null'] }
+                    warehouse: { type: [string, 'null'] }
+                    shift: { $ref: '#/components/schemas/Shift' }
+                    startedAt: { type: string, format: date-time }
+                - type: 'null'
+            receiptsInSession:
+              type: integer
+              minimum: 0
+              description: '**Phase 5.** `SELECT COUNT(*) FROM receipts WHERE session_id = :activeSessionId`. Không có phiên đang mở → `0`.'
+
+    DeviceEnvelope:
+      type: object
+      required: [device, serverTime, heartbeatIntervalMs]
+      properties:
+        device: { $ref: '#/components/schemas/Device' }
+        created: { type: boolean, description: '`true` chỉ ở lần đầu (kèm HTTP 201).' }
+        serverTime: { type: string, format: date-time }
+        heartbeatIntervalMs:
+          type: integer
+          const: 15000
+          description: '**Luôn 15000.** FE dùng số này, không hard-code.'
+
+    DeviceRegister:
+      type: object
+      additionalProperties: false
+      properties:
+        deviceId:
+          type: string
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          description: Bắt buộc **ở đây hoặc ở header** `x-device-id`. Có cả hai mà khác → `400 DEVICE_ID_MISMATCH`.
+        name: { type: [string, 'null'], minLength: 1, maxLength: 60, description: 'Trim; `""` → `null`.' }
+        appVersion: { type: [string, 'null'], maxLength: 32 }
+        platform: { type: [string, 'null'], maxLength: 120 }
+        network: { $ref: '#/components/schemas/Network' }
+        screen: { type: [string, 'null'], maxLength: 16 }
+        meta: { type: object }
+
+    DeviceHeartbeat:
+      type: object
+      additionalProperties: false
+      description: Field vắng mặt → **giữ giá trị cũ** (trừ `battery` và `pendingQueue`).
+      properties:
+        appVersion: { type: [string, 'null'], maxLength: 32 }
+        network: { $ref: '#/components/schemas/Network' }
+        battery:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: '**Tỉ lệ 0..1**, không phải phần trăm. Ngoài khoảng → kẹp về biên, **không** báo lỗi.'
+        pendingQueue:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Số phiếu đang chờ đồng bộ ở FE. **Phase 3–4 luôn `0`**; có giá trị thật từ **Phase 5**.
+        screen: { type: [string, 'null'], maxLength: 16 }
+        meta:
+          type: [object, 'null']
+          additionalProperties: true
+          description: >-
+            Dữ liệu phụ do thiết bị tự khai (ví dụ `netSim` = kịch bản mạng đang áp, userAgent,
+            kích thước màn hình). BE lưu nguyên và trả lại trong `GET /api/devices`; màn hình giám sát
+            dùng `meta.netSim` để hiện cột Mạng. Field vắng mặt thì giữ giá trị cũ; quá lớn thì BE bỏ hẳn
+            thay vì cắt giữa chừng.
+
+    Network:
+      type: string
+      enum: [wifi, cellular, ethernet, offline, unknown]
+      default: unknown
+
+    Shift:
+      type: [string, 'null']
+      enum: [sang, chieu, dem, null]
+
+    EndReason:
+      type: string
+      enum: [manual, timeout, superseded]
+      default: manual
+
+    Session:
+      type: object
+      required: [id, deviceId, operator, warehouse, shift, startedAt, endedAt, endReason, summary]
+      properties:
+        id: { type: string }
+        deviceId: { type: string, description: 'Quan hệ 1-1: một phiên chỉ thuộc một thiết bị. Đổi thiết bị = phiên mới.' }
+        operator: { type: [string, 'null'], minLength: 1, maxLength: 80 }
+        warehouse: { type: [string, 'null'], minLength: 1, maxLength: 80 }
+        shift: { $ref: '#/components/schemas/Shift' }
+        startedAt: { type: string, format: date-time }
+        endedAt: { type: [string, 'null'], format: date-time }
+        endReason: { type: [string, 'null'], enum: [manual, timeout, superseded, null] }
+        summary:
+          type: object
+          required: [receipts, recognitions, recognitionsFailed]
+          description: Tính bằng SQL tại thời điểm đọc, không lưu sẵn.
+          properties:
+            receipts: { type: integer, minimum: 0 }
+            recognitions: { type: integer, minimum: 0 }
+            recognitionsFailed: { type: integer, minimum: 0 }
+
+    SessionStart:
+      type: object
+      additionalProperties: false
+      properties:
+        deviceId:
+          type: string
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          description: Bắt buộc ở đây **hoặc** ở header `x-device-id`.
+        operator: { type: [string, 'null'], minLength: 1, maxLength: 80 }
+        warehouse: { type: [string, 'null'], minLength: 1, maxLength: 80 }
+        shift: { $ref: '#/components/schemas/Shift' }
+
+    BackendMode:
+      type: string
+      enum: [normal, degraded, readonly, down]
+      default: normal
+
+    OcrMode:
+      type: string
+      enum: [success, slow, error, timeout, partial, garbage, lowConfidence]
+      default: success
+      description: |
+        `slow` chờ `max(delayMs, 6000)` ms · `error` và `timeout` **không gọi provider** ·
+        `partial` xoá đúng 3 trường cố định (`partNumber`, `shipmentDate`, `supplier`) ·
+        `garbage` ghi đè 3 trường bằng chuỗi rác · `lowConfidence` đặt `confidence = 0.3` cho mọi trường.
+
+    SaveMode:
+      type: string
+      enum: [normal, fail, slow]
+      default: normal
+      description: '`fail` → `503 SAVE_FAILED_SIMULATED`, **không** ghi DB · `slow` chờ `max(latencyMs, 8000)` ms.'
+
+    SapMode:
+      type: string
+      enum: [success, slow, reject, down]
+      default: success
+      description: |
+        Phase 3 **chỉ lưu và phản chiếu, không dùng**. Từ **Phase 4** nó điều khiển SAP mock thật:
+        `success` chờ `SAP_MOCK_SUCCESS_DELAY_MS` (300) · `slow` chờ `SAP_MOCK_SLOW_DELAY_MS`
+        (8000, vượt timeout → `SAP_TIMEOUT`, đó chính là điểm demo) · `reject` ném lỗi **nghiệp vụ**
+        `SAP_PART_UNKNOWN` · `down` ném **ngay** `SAP_UNAVAILABLE`, không chờ.
+
+        `sim.sap.latencyMs` **cộng thêm** vào độ trễ ở **mọi** mode trừ `down`.
+
+        **SAP mock chỉ nghe kịch bản TOÀN CỤC** (`PUT /api/admin/sim`). Kịch bản theo thiết bị
+        (`PUT /api/admin/sim/devices/{deviceId}`) **không** ảnh hưởng SAP: SAP là hệ thống ở đầu
+        kia của Main Backend, nó không biết phiếu đến từ PDA nào. Kịch bản theo thiết bị chỉ có
+        nghĩa cho `backend`/`ocr`/`save` — những thứ nằm trên đường đi của **request** từ thiết bị đó.
+
+    Scenario:
+      type: object
+      required: [backend, ocr, save, sap]
+      additionalProperties: false
+      description: |
+        Kịch bản mô phỏng **đầy đủ** (đã trộn). Không có key nào khác được chấp nhận.
+        Giá trị mặc định `SIM_DEFAULT` chính là ví dụ dưới đây.
+      properties:
+        backend:
+          type: object
+          required: [mode, latencyMs]
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/BackendMode' }
+            latencyMs: { type: integer, minimum: 0, maximum: 30000, default: 0 }
+        ocr:
+          type: object
+          required: [mode, delayMs]
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/OcrMode' }
+            delayMs: { type: integer, minimum: 0, maximum: 30000, default: 0 }
+        save:
+          type: object
+          required: [mode, latencyMs]
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/SaveMode' }
+            latencyMs: { type: integer, minimum: 0, maximum: 30000, default: 0 }
+        sap:
+          type: object
+          required: [mode, latencyMs]
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/SapMode' }
+            latencyMs: { type: integer, minimum: 0, maximum: 30000, default: 0 }
+      examples:
+        - backend: { mode: normal, latencyMs: 0 }
+          ocr: { mode: success, delayMs: 0 }
+          save: { mode: normal, latencyMs: 0 }
+          sap: { mode: success, latencyMs: 0 }
+
+    SimScenario:
+      $ref: '#/components/schemas/Scenario'
+
+    ScenarioPatch:
+      type: object
+      additionalProperties: false
+      description: |
+        Patch **từng phần**, trộn ở **cấp field**. Body rỗng `{}` là hợp lệ. Key lạ ở cấp 1 hoặc cấp 2
+        → `400 INVALID_SIM_CONFIG` với `details.unknownKeys`.
+      properties:
+        backend:
+          type: object
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/BackendMode' }
+            latencyMs: { type: integer, minimum: 0, maximum: 30000 }
+        ocr:
+          type: object
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/OcrMode' }
+            delayMs: { type: integer, minimum: 0, maximum: 30000 }
+        save:
+          type: object
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/SaveMode' }
+            latencyMs: { type: integer, minimum: 0, maximum: 30000 }
+        sap:
+          type: object
+          additionalProperties: false
+          properties:
+            mode: { $ref: '#/components/schemas/SapMode' }
+            latencyMs: { type: integer, minimum: 0, maximum: 30000 }
+
+    SimAdminState:
+      type: object
+      required: [enabled, default, global, devices, updatedAt, serverTime]
+      properties:
+        enabled: { type: boolean, description: Giá trị `SIM_OVERRIDE`. }
+        default: { $ref: '#/components/schemas/Scenario' }
+        global: { $ref: '#/components/schemas/Scenario' }
+        devices:
+          type: object
+          description: Map `deviceId` → **object thô đã lưu** (chỉ các key người dùng đặt). Không có device nào → `{}`.
+          additionalProperties: { $ref: '#/components/schemas/ScenarioPatch' }
+        updatedAt: { type: [string, 'null'], format: date-time }
+        serverTime: { type: string, format: date-time }
+
+    SimDeviceState:
+      type: object
+      required: [enabled, deviceId, deviceKnown, device, effectiveForDevice, updatedAt, serverTime]
+      properties:
+        enabled: { type: boolean }
+        deviceId: { type: string }
+        deviceKnown: { type: boolean, description: '`false` khi thiết bị chưa đăng ký — vẫn được phép đặt kịch bản.' }
+        device: { oneOf: [{ $ref: '#/components/schemas/ScenarioPatch' }, { type: 'null' }] }
+        effectiveForDevice: { $ref: '#/components/schemas/Scenario' }
+        updatedAt: { type: [string, 'null'], format: date-time }
+        serverTime: { type: string, format: date-time }
+
+    # ──────────────── Phase 5 — sổ sự kiện toàn hệ thống (`system_events`) ────────────────
+
+    EventSeverity:
+      type: string
+      enum: [info, warn, error]
+      description: |
+        Mỗi `type` có một severity **mặc định** do bảng `EVENT_TYPES` (`apps/server/src/events.js`)
+        quyết định; nơi ghi sự kiện có thể ghi đè. Màn hình giám sát tô màu theo trường này.
+
+    SystemEventType:
+      type: string
+      description: |
+        **31 giá trị** = 16 loại hệ thống + 15 loại `receipt.*`. Nguồn sự thật duy nhất là hằng
+        `EVENT_TYPES` trong `apps/server/src/events.js`; `type` ngoài bảng đó làm `events.write()`
+        **ném lỗi** (đó là bug lập trình, ghi im lặng sẽ giấu nó tới tận lúc demo).
+
+        Các loại `receipt.*` vào đây bằng cơ chế **gương**: mỗi lần ghi `receipt_events`, một dòng
+        tương ứng được ghi sang `system_events`. Hai bảng vẫn tách biệt — `receipt_events` là sổ
+        kiểm toán **vĩnh viễn**, `system_events` là sổ quan sát **có cắt vòng xoay**.
+      enum:
+        - server.start
+        - server.stop
+        - sim.updated
+        - sim.cleared
+        - device.registered
+        - device.camera_error
+        - device.battery_low
+        - device.queue_enqueued
+        - device.queue_synced
+        - device.sim_changed
+        - session.started
+        - session.ended
+        - recognition.started
+        - recognition.completed
+        - recognition.failed
+        - recognition.rejected_busy
+        - receipt.confirmed
+        - receipt.duplicate_override
+        - receipt.posting
+        - receipt.posted
+        - receipt.post_retry
+        - receipt.post_failed
+        - receipt.rejected
+        - receipt.retry_requested
+        - receipt.cancelled
+        - receipt.reversal_queued
+        - receipt.reversal_posted
+        - receipt.reversal_failed
+        - receipt.corrected
+        - receipt.superseded
+        - receipt.swept
+
+    ClientEventType:
+      type: string
+      enum: [device.camera_error, device.battery_low, device.queue_enqueued, device.queue_synced, device.sim_changed]
+      description: |
+        **Danh sách trắng đúng 5 giá trị** mà PDA được phép tự gửi (`CLIENT_EVENT_TYPES` trong
+        `apps/server/src/events.js`). `session.started` **không** nằm trong danh sách: BE đã tự ghi
+        nó ở `POST /api/sessions/start`, để PDA gửi thêm sẽ thành hai dòng cho cùng một việc.
+        Giá trị ngoài danh sách → `400 INVALID_EVENT_TYPE` và cả lô bị từ chối.
+
+    SystemEvent:
+      type: object
+      required: [id, at, type, severity, deviceId, sessionId, receiptId, recognitionId, clientAt, detail]
+      additionalProperties: false
+      description: Một dòng của bảng `system_events`. **Mọi key luôn có mặt**; key không áp dụng là `null`.
+      properties:
+        id:
+          type: integer
+          minimum: 1
+          description: Khoá chính tự tăng — đồng thời là **con trỏ phân trang** của `?since=`.
+        at:
+          type: string
+          format: date-time
+          description: Giờ **server**. Giờ do PDA khai nằm ở `clientAt`, không bao giờ vào đây.
+        type: { $ref: '#/components/schemas/SystemEventType' }
+        severity: { $ref: '#/components/schemas/EventSeverity' }
+        deviceId: { type: [string, 'null'] }
+        sessionId: { type: [string, 'null'] }
+        receiptId: { type: [string, 'null'] }
+        recognitionId: { type: [string, 'null'] }
+        clientAt:
+          type: [string, 'null']
+          format: date-time
+          description: Giờ do PDA tự khai, chỉ để tham khảo. Không gửi hoặc sai định dạng → `null`. **Không bao giờ** dùng để sắp xếp.
+        detail:
+          type: object
+          description: 'JSON tuỳ loại sự kiện; không có gì → `{}`. JSON hoá vượt **2048 byte** → thay hẳn bằng `{"_truncated": true}` (cắt giữa chừng sẽ không parse lại được).'
+
+    DeviceEventIn:
+      type: object
+      required: [type]
+      additionalProperties: false
+      description: Một phần tử của lô mà PDA gửi lên `POST /api/devices/{deviceId}/events`.
+      properties:
+        type: { $ref: '#/components/schemas/ClientEventType' }
+        at:
+          type: string
+          format: date-time
+          description: Giờ client, lưu vào cột `client_at`. Sai định dạng → **bỏ qua**, không báo lỗi.
+        detail:
+          type: object
+          description: 'Không phải object → lưu `{}`. Vượt 2048 byte → lưu `{"_truncated": true}`.'
+
+    DeviceEventBatch:
+      type: object
+      required: [events]
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          minItems: 1
+          maxItems: 20
+          description: Không phải mảng, rỗng, hoặc quá **20** phần tử → `400 INVALID_BODY` với `details = {field, max}`.
+          items: { $ref: '#/components/schemas/DeviceEventIn' }
+
+    AdminRecognition:
+      type: object
+      required: [recognitionId, status, provider, deviceId, sessionId, imageId, createdAt, finishedAt, durationMs, ageMs, fieldsFound, errorCode]
+      additionalProperties: false
+      description: |
+        Một dòng của bảng `recognitions`, **rút gọn cho người giám sát**. Cố ý **không** có
+        `fields` / `rawText`: monitor không cần dữ liệu nhãn, và đó là dữ liệu nghiệp vụ.
+      properties:
+        recognitionId: { type: string }
+        status: { type: string, enum: [pending, completed, failed] }
+        provider: { type: string, enum: [mock, http] }
+        deviceId: { type: [string, 'null'] }
+        sessionId: { type: [string, 'null'] }
+        imageId: { type: string }
+        createdAt: { type: string, format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time, description: '`null` khi còn `pending`.' }
+        durationMs: { type: [integer, 'null'], minimum: 0, description: '`null` khi còn `pending`.' }
+        ageMs:
+          type: [integer, 'null']
+          minimum: 0
+          description: '`serverTime - createdAt`, do **server** tính — không bao giờ tin đồng hồ client. `createdAt` không parse được → `null`.'
+        fieldsFound:
+          type: integer
+          minimum: 0
+          description: Số trường đọc được từ `normalized`. Còn `pending`, thất bại, hoặc `normalized` hỏng → `0`.
+        errorCode: { type: [string, 'null'], description: 'Mã lỗi khi `status = "failed"`; ngược lại `null`.' }
+
+    StatusResponse:
+      type: object
+      required: [backend, ocr, sap, queue, recognition, sim, serverTime, version]
+      additionalProperties: false
+      description: Mọi key **luôn có mặt**; không có key nào là tuỳ chọn.
+      properties:
+        backend:
+          type: object
+          required: [state, readonly, latencyMs, uptimeSec, simulated]
+          additionalProperties: false
+          properties:
+            state:
+              type: string
+              enum: [up, degraded, readonly, down]
+              description: |
+                Ánh xạ 1-1 từ `sim.effective.backend.mode`: `normal→up`, `degraded→degraded`,
+                `readonly→readonly`, `down→down`. Khi `SIM_OVERRIDE=false` **luôn** là `up`.
+            readonly: { type: boolean, description: '`true` ⇔ `state === "readonly"`.' }
+            latencyMs: { type: integer, minimum: 0 }
+            uptimeSec: { type: integer, minimum: 0 }
+            simulated: { type: boolean, description: '`true` khi `state !== "up"` **hoặc** `latencyMs > 0`.' }
+        ocr:
+          type: object
+          required: [reachable, configured, ready, simMode, mode, model, provider, checkedAt, latencyMs, cached]
+          additionalProperties: false
+          description: |
+            `ready` và `simMode` là **ĐÍNH CHÍNH R7** của `docs/specs/phase-3/01-contracts.md` §5.1
+            (bản 0.4.0 của file này bổ sung — trước đó hai trường có trong code mà thiếu trong hợp
+            đồng). FE quyết định màu đèn OCR bằng `ready`, **không** bằng `configured`.
+          properties:
+            reachable: { type: boolean, description: 'Provider `mock` → luôn `true`.' }
+            configured: { type: boolean, description: 'Provider `http`: `Boolean(body.configured)` từ probe; probe lỗi → `false`. Chỉ mang tính thông tin.' }
+            ready:
+              type: boolean
+              description: |
+                **Có phục vụ được `POST /recognize` hay không** = `configured === true` **HOẶC**
+                `simMode !== "passthrough"`. Provider `mock` → luôn `true`; probe lỗi → `false`.
+                Đèn OCR của PDA: xanh khi `reachable && ready`, vàng khi `reachable && !ready`,
+                đỏ khi `!reachable`.
+            simMode:
+              type: [string, 'null']
+              description: 'Giá trị `OCR_SIM_MODE` của ai-server. Provider `mock` hoặc probe lỗi → `null`.'
+            mode: { $ref: '#/components/schemas/OcrMode' }
+            model: { type: [string, 'null'], description: 'Provider `mock` → `"mock-vlm-0"`. Khi `simMode` khác `passthrough` → `"sim-" + simMode`.' }
+            provider: { type: string, enum: [mock, http] }
+            checkedAt: { type: string, format: date-time, description: 'Thời điểm probe **thật sự chạy**, không phải thời điểm request.' }
+            latencyMs: { type: [integer, 'null'], minimum: 0 }
+            cached: { type: boolean, description: '`true` nếu dùng kết quả probe cũ trong TTL 10000 ms.' }
+        sap:
+          type: object
+          required: [reachable, mode]
+          additionalProperties: false
+          description: |
+            **Đúng 2 key, không thêm key nào.** Ở Phase 3 giá trị **luôn** là
+            `{"reachable": false, "mode": "not_configured"}`. Từ **Phase 4** nó phản ánh adapter
+            đang chạy — xem bảng đầy đủ ở `description` của `GET /api/status`. Giá trị
+            `not_configured` từ đó về sau chỉ có nghĩa **`SAP_ADAPTER=none`**.
+          properties:
+            reachable:
+              type: boolean
+              description: '`(SAP_ADAPTER !== "none") && (sim.effective.sap.mode !== "down")`.'
+            mode:
+              type: string
+              enum: [not_configured, success, slow, reject, down]
+              description: '`SAP_ADAPTER === "none"` → `not_configured`; ngược lại = `sim.effective.sap.mode`.'
+        queue:
+          type: object
+          required: [recognitionsInflight, recognitionsWaiting, outboxPending, recognitionsPending, recognitionsFailedRecent]
+          additionalProperties: false
+          description: |
+            Ba key đầu là hợp đồng Phase 3–4. Hai key cuối **mới ở Phase 5**: chúng đếm trong
+            **bảng `recognitions`**, không phải trong semaphore, nên chúng vẫn có nghĩa khi
+            `RECOGNITION_MODE=async` và công việc chạy nền sau khi PDA đã rời trang.
+          properties:
+            recognitionsInflight: { type: integer, minimum: 0, maximum: 3 }
+            recognitionsWaiting: { type: integer, minimum: 0, maximum: 10 }
+            outboxPending:
+              type: integer
+              minimum: 0
+              description: |
+                **Luôn `0`** ở Phase 3. Từ **Phase 4**:
+                `SELECT COUNT(*) FROM outbox WHERE state = 'pending'` — đếm cả `kind='post'` lẫn
+                `kind='reversal'`; `state='failed'` **không** tính. `SAP_ADAPTER=none` → `0`.
+            recognitionsPending:
+              type: integer
+              minimum: 0
+              description: |
+                **Phase 5.** Số dòng `recognitions` đang ở `status = 'pending'` — tức công việc
+                nhận dạng **chưa kết thúc**, kể cả khi PDA đã đóng tab. Ở `RECOGNITION_MODE=sync`
+                con số này gần như luôn bằng `recognitionsInflight`.
+            recognitionsFailedRecent:
+              type: integer
+              minimum: 0
+              description: |
+                **Phase 5.** Số lần nhận dạng thất bại gần đây, để dải trạng thái của màn hình
+                giám sát đổi màu khi OCR đang hỏng.
+        recognition:
+          type: object
+          required: [mode, maxConcurrent, maxWaiting, timeoutMs, pollHintMs]
+          additionalProperties: false
+          description: |
+            **Khoá cấp một MỚI của Phase 5**, nằm ngay sau `queue`. Đúng **5 key**, tất cả đọc
+            thẳng từ config — không đọc DB. FE dùng `mode` để **tự biết** đi đường `sync` hay
+            `async` mà không cần biến build-time.
+          properties:
+            mode:
+              type: string
+              enum: [sync, async]
+              description: |
+                `RECOGNITION_MODE`. **Mặc định `sync`** (giữ nguyên hành vi Phase 1–4:
+                `POST /api/recognitions` trả `201` kèm kết quả). `async` → `202` + `pollUrl`.
+            maxConcurrent: { type: integer, minimum: 1, description: '`RECOGNITION_MAX_CONCURRENT`, mặc định `3`.' }
+            maxWaiting: { type: integer, minimum: 0, description: '`RECOGNITION_MAX_WAITING`, mặc định `10`. Vượt → `429 RECOGNITION_BUSY`.' }
+            timeoutMs: { type: integer, minimum: 1, description: '`RECOGNITION_TIMEOUT_MS`, mặc định `20000`. Ngân sách dùng chung cho cả 2 attempt.' }
+            pollHintMs:
+              type: integer
+              minimum: 200
+              maximum: 10000
+              description: '`RECOGNITION_POLL_HINT_MS`, mặc định `1000`. Client chờ ngần này rồi mới poll lần đầu.'
+        sim:
+          type: object
+          required: [enabled, scope, effective, global, device, updatedAt]
+          additionalProperties: false
+          properties:
+            enabled: { type: boolean }
+            scope: { type: string, enum: [device, global, none] }
+            effective: { $ref: '#/components/schemas/Scenario' }
+            global: { oneOf: [{ $ref: '#/components/schemas/Scenario' }, { type: 'null' }] }
+            device: { oneOf: [{ $ref: '#/components/schemas/ScenarioPatch' }, { type: 'null' }] }
+            updatedAt: { type: [string, 'null'], format: date-time }
+        serverTime: { type: string, format: date-time }
+        version: { type: string, description: 'Đọc từ `apps/server/package.json`, **không** từ `package.json` root.' }
+
+    Status:
+      $ref: '#/components/schemas/StatusResponse'
+
+  responses:
+
+    Err400:
+      description: |
+        Request sai hình thức. `code` có thể là `INVALID_JSON`, `INVALID_BODY`, `INVALID_REQUEST_ID`,
+        `INVALID_RECOGNITION_ID`, `INVALID_SOURCE`, `INVALID_SIM`, `INVALID_SIM_CONFIG`,
+        `IMAGE_REQUIRED`, `IMAGE_EMPTY`, `INVALID_MULTIPART`, `DEVICE_REQUIRED`,
+        `INVALID_DEVICE_ID`, `DEVICE_ID_MISMATCH`, và **từ Phase 4** `INVALID_QUERY`
+        (`details = {field, allowed?}`), `INVALID_CURSOR` (`details = {cursor}`).
+
+        **Từ Phase 5:** `INVALID_SINCE` (`details = {since}`, chỉ ở `GET /api/admin/events`) và
+        `INVALID_EVENT_TYPE` (`details = {type, allowed}`, chỉ ở
+        `POST /api/devices/{deviceId}/events`).
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: INVALID_DEVICE_ID
+              message: x-device-id phải là UUID v4 chữ thường
+              details: { deviceId: 0D5C7F33-9D59-4D2E-8F11-0B3C9C0BD511 }
+
+    Err403:
+      description: Mô phỏng đang tắt. Áp dụng cho **mọi** method của `/api/admin/sim*`, kể cả `GET`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: SIM_DISABLED
+              message: Mô phỏng đang tắt (SIM_OVERRIDE=false)
+
+    Err404:
+      description: Không tìm thấy. `code` là `NOT_FOUND`, `DEVICE_NOT_FOUND` hoặc `SESSION_NOT_FOUND`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: DEVICE_NOT_FOUND
+              message: Thiết bị chưa đăng ký
+              details: { deviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511 }
+
+    Err409:
+      description: |
+        Bốn mã dùng chung mã HTTP này:
+
+        | code | Khi nào | `details` |
+        |---|---|---|
+        | `REQUEST_ID_CONFLICT` | `requestId` đã tồn tại nhưng payload **khác** | `{receiptId}` — bản đã lưu; client dùng `requestId` mới hoặc bỏ |
+        | `RECEIPT_STATE_INVALID` `P4` | Thao tác không hợp lệ với trạng thái hiện tại (`retry-post`, `cancel`, `correct`) | `{current, allowed: [...]}` |
+        | `SAP_NOT_CONFIGURED` `P4` | Gọi `retry-post` khi `SAP_ADAPTER=none` | `{adapter: "none"}` |
+        | `DUPLICATE_LABEL` `P4` | Trùng nhãn cùng ngày **địa phương** + kho, chưa xác nhận | `{existingReceiptId, existingCreatedAt, existingDeviceId, existingStatus, key}` |
+
+        **Luồng xác nhận 2 bước của `DUPLICATE_LABEL`** (FE làm đúng như sau):
+        gửi `POST /api/receipts` bình thường → nhận 409 → **giữ nguyên form, giữ nguyên `requestId`**
+        → hiện banner với 2 nút "Xem phiếu đã nhập" và "Vẫn lưu phiếu này" → bấm nút thứ hai thì gửi
+        lại **cùng `requestId`, cùng `data`**, chỉ thêm `"allowDuplicate": true` → BE lưu và ghi thêm
+        sự kiện `receipt.duplicate_override`.
+
+        Cả bốn mã đều rơi vào loại `CLIENT` của `lib/transport.js` (theo HTTP status 409), tức
+        **không retry** và **không khoá nút lưu** — đúng hành vi cần. FE bắt chúng theo `err.code`
+        trực tiếp, **không** dựa vào `err.kind`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            requestIdConflict:
+              summary: REQUEST_ID_CONFLICT
+              value:
+                error:
+                  code: REQUEST_ID_CONFLICT
+                  message: requestId đã được dùng cho một bản ghi khác
+                  details: { receiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77 }
+            duplicateLabel:
+              summary: DUPLICATE_LABEL (Phase 4)
+              value:
+                error:
+                  code: DUPLICATE_LABEL
+                  message: Nhãn này đã được nhập hôm nay
+                  details:
+                    existingReceiptId: c2e51dbb-1b93-4f2e-8d2a-5a1a3f4e9c77
+                    existingCreatedAt: '2026-09-21T14:10:00.321Z'
+                    existingDeviceId: 0d5c7f33-9d59-4d2e-8f11-0b3c9c0bd511
+                    existingStatus: posted
+                    key:
+                      partNumber: BEX32181030AB
+                      batch: null
+                      saNumber: null
+                      warehouse: Kho Long Biên
+                      day: '2026-09-21'
+            receiptStateInvalid:
+              summary: RECEIPT_STATE_INVALID (Phase 4)
+              value:
+                error:
+                  code: RECEIPT_STATE_INVALID
+                  message: Không thực hiện được thao tác này với trạng thái hiện tại của phiếu
+                  details: { current: posted, allowed: [post_failed] }
+            sapNotConfigured:
+              summary: SAP_NOT_CONFIGURED (Phase 4)
+              value:
+                error:
+                  code: SAP_NOT_CONFIGURED
+                  message: Chưa cấu hình kết nối SAP
+                  details: { adapter: none }
+
+    Err413:
+      description: Body hoặc ảnh vượt giới hạn. `PAYLOAD_TOO_LARGE` (JSON 1048576 byte) hoặc `IMAGE_TOO_LARGE` (`MAX_UPLOAD_BYTES`, mặc định 10485760 byte).
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: IMAGE_TOO_LARGE
+              message: Ảnh 12582912 byte vượt giới hạn 10485760 byte
+
+    Err415:
+      description: Sai Content-Type (`UNSUPPORTED_MEDIA_TYPE`) hoặc ảnh không phải JPEG/PNG/WebP theo magic bytes (`UNSUPPORTED_IMAGE`).
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: UNSUPPORTED_IMAGE
+              message: Chỉ nhận ảnh JPEG, PNG hoặc WebP
+
+    Err422:
+      description: |
+        Dữ liệu nghiệp vụ bị từ chối.
+
+        | code | `details` |
+        |---|---|
+        | `VALIDATION_FAILED` | `details.fields[key]` — thông điệp **từng trường**, FE gắn vào đúng ô, **không** hiện banner chung |
+        | `RECOGNITION_NOT_FOUND` | — |
+        | `LOCATION_UNKNOWN` `P4` | `{field: "location", value, suggestions: [≤ 3 mã]}` — **số ít** `field`, không phải `fields` |
+
+        `LOCATION_UNKNOWN` dùng **422** chứ không 400 vì nó là lỗi **giá trị dữ liệu**, không phải
+        lỗi cú pháp. `suggestions` chọn tất định: lọc các `code` `active` **bắt đầu bằng** ký tự đầu
+        của `value` (không phân biệt hoa thường), sắp xếp tăng dần, lấy 3 đầu; không khớp ký tự đầu
+        nào → mảng rỗng `[]` (**không** vắng key). Kiểm **sau khi** `validateReceiptData` đã chuẩn
+        hoá `location`, và chỉ khi `RULE_LOCATION=true` **và** danh mục đã nạp được **và** không rỗng.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            validationFailed:
+              summary: VALIDATION_FAILED
+              value:
+                error:
+                  code: VALIDATION_FAILED
+                  message: Dữ liệu chưa hợp lệ
+                  details:
+                    fields:
+                      shipmentDate: Ngày không hợp lệ
+                      location: Chưa có dữ liệu
+            locationUnknown:
+              summary: LOCATION_UNKNOWN (Phase 4)
+              value:
+                error:
+                  code: LOCATION_UNKNOWN
+                  message: Vị trí không có trong danh mục kho
+                  details:
+                    field: location
+                    value: A-99-99
+                    suggestions: [A-09-09, A-03-02, A-01-11]
+
+    Err429:
+      description: Hàng đợi nhận dạng đầy (3 chạy + 10 chờ) hoặc chờ quá 30000 ms. `details` **không có** `recognitionId` — chưa recognition nào được tạo.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+        retry-after:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: RECOGNITION_BUSY
+              message: Máy chủ đang xử lý nhiều ảnh, hãy thử lại sau ít giây
+              details: { retryAfterMs: 3000, inflight: 3, waiting: 10 }
+
+    Err502:
+      description: Provider OCR hỏng (AI server 5xx/429, JSON hỏng, kết nối hỏng) sau khi đã hết lượt retry.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: RECOGNITION_FAILED
+              message: AI server trả HTTP 502 — UPSTREAM_ERROR LLM API trả HTTP 500
+              details:
+                recognitionId: 218e4142-7a3b-4c11-9f0e-1b2c3d4e5f60
+                imageId: 4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12
+
+    Err503:
+      description: |
+        Máy chủ tạm không phục vụ được. `PROVIDER_NOT_CONFIGURED` (thiếu `AI_SERVER_URL` hoặc
+        ai-server thiếu key) · `SAVE_FAILED_SIMULATED` · `BACKEND_DOWN_SIMULATED` ·
+        `BACKEND_READONLY`. Ba mã mô phỏng kèm `retry-after: 5` và `details.retryAfterMs: 5000`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+        retry-after:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: BACKEND_DOWN_SIMULATED
+              message: 'Mô phỏng: máy chủ đang ngừng hoạt động'
+              details: { retryAfterMs: 5000, simulated: true }
+
+    Err504:
+      description: |
+        Quá ngân sách `RECOGNITION_TIMEOUT_MS` (Phase 3: 20000 ms, dùng chung cho cả 2 attempt),
+        **hoặc** ai-server trả HTTP 504 / `error.code = "UPSTREAM_TIMEOUT"`.
+      headers:
+        x-request-id:
+          $ref: '#/components/headers/XRequestIdOut'
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: RECOGNITION_TIMEOUT
+              message: Nhận dạng quá 20000 ms không phản hồi
+              details:
+                recognitionId: 218e4142-7a3b-4c11-9f0e-1b2c3d4e5f60
+                imageId: 4944ec07-2d66-4c5a-9e81-0b7c3a5d9e12

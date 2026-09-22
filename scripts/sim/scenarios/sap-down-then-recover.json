@@ -1,0 +1,22 @@
+{
+  "name": "sap-down-then-recover",
+  "description": "SAP ngừng hoạt động rồi hồi phục; kiểm outbox retry và phiếu về posted",
+  "requires": ["sim", "sap", "events"],
+  "settleMs": 75000,
+  "timeoutMs": 300000,
+  "steps": [
+    { "at": 0, "action": "sim.set", "scope": "global", "patch": { "sap": { "mode": "down" } } },
+    { "at": 200, "action": "devices.start", "devices": 3, "rate": 12, "recognize": false },
+    { "at": 20000, "action": "devices.stop" },
+    { "at": 25000, "action": "expectNow", "check": "outbox.pendingEnd", "op": ">=", "value": 1 },
+    { "at": 40000, "action": "note", "text": "— SAP hoạt động trở lại —" },
+    { "at": 40000, "action": "sim.set", "scope": "global", "patch": { "sap": { "mode": "success" } } }
+  ],
+  "expect": [
+    { "check": "receipts.delta", "op": ">=", "value": 6 },
+    { "check": "events.count", "type": "receipt.post_retry", "op": ">=", "value": 1 },
+    { "check": "receipts.byStatus", "status": "posted", "op": ">=", "value": 6 },
+    { "check": "outbox.pendingEnd", "op": "==", "value": 0 },
+    { "check": "requestId.unique", "op": "==", "value": true }
+  ]
+}

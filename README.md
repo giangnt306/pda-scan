@@ -2,10 +2,25 @@
 
 ## Chạy
 
+Monorepo npm workspaces, Node ≥ 22.13.
+
+```text
+apps/webapp     React + Vite (HTTPS :5173), proxy /api → BE
+apps/server     Main Backend (loopback :3000), SQLite, gọi ai-server khi RECOGNITION_PROVIDER=http
+apps/ai-server  OCR bằng LLM vision (loopback :8000)
+scripts/        dev.js (chạy cả 3), sim/ (kịch bản giả lập thiết bị)
+```
+
 ```bash
 npm install
-npm run dev
+cp apps/ai-server/.env.example apps/ai-server/.env   # dán OPENAI_API_KEY, hoặc đặt OCR_SIM_MODE
+cp apps/server/.env.example apps/server/.env         # RECOGNITION_PROVIDER=http để dùng ai-server
+npm run dev      # ai-server + BE + webapp; WITHOUT_AI=1 để bỏ ai-server
+npm test         # test ai-server, server, sim
 ```
+
+Chụp nhãn xong, webapp POST ảnh lên `/api/recognitions` (BE); lỗi thì báo toast và người vận hành nhập tay.
+Chi tiết: [apps/server/README.md](apps/server/README.md), [apps/ai-server/README.md](apps/ai-server/README.md), [scripts/sim/README.md](scripts/sim/README.md).
 
 ## Chụp nhãn
 

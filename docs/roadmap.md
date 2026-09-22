@@ -33,7 +33,7 @@ Manual entry remains available when `ImageCapture` is unsupported.
 
 ### 1. Recognition Integration
 
-Replace the local `recognize` implementation in `src/App.jsx` with an upload of `frame.blob` and handling of the service response.
+Replace the local `recognize` implementation in `apps/webapp/src/App.jsx` with an upload of `frame.blob` and handling of the service response.
 
 The response contract is represented by `FAKE_AI` and documented in [data-model.md](data-model.md). `applyAiResult` already follows this contract.
 
@@ -143,7 +143,7 @@ Revisit these only when a concrete requirement justifies them.
 
 `App.jsx` currently contains the field schema, form components, and application state in about 462 lines.
 
-Camera and normalisation logic have already been extracted into `ScannerSheet.jsx` and `src/lib/`.
+Camera and normalisation logic have already been extracted into `ScannerSheet.jsx` and `apps/webapp/src/lib/`.
 
 The next likely extraction is:
 

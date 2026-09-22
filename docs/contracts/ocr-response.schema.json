@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://pda-scan.local/contracts/ocr-response.schema.json",
+  "title": "OCR /recognize response",
+  "description": "Response 200 của POST /recognize (apps/ai-server). Nguồn sự thật: docs/specs/phase-3/01-contracts.md và FIELD_SPECS trong apps/ai-server/src/ocr.js. additionalProperties=true ở cấp gốc để ai-server thêm field mà không gãy contract; additionalProperties=false bên trong fields[] vì đây là phần Main Backend ánh xạ (mapAiResponse), phải chặt.",
+  "type": "object",
+  "required": ["fields"],
+  "additionalProperties": true,
+  "properties": {
+    "recognitionId": { "type": ["string", "null"] },
+    "requestId": { "type": ["string", "null"] },
+    "durationMs": { "type": "number", "minimum": 0 },
+    "model": { "type": ["string", "null"] },
+    "simMode": {
+      "type": "string",
+      "enum": ["passthrough", "slow", "error", "timeout", "partial", "garbage"]
+    },
+    "retryCount": { "type": "integer", "minimum": 0, "maximum": 5 },
+    "rawText": { "type": "string" },
+    "usage": { "type": ["object", "null"] },
+    "fields": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "required": ["name", "text", "score"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "part_number",
+              "part_name",
+              "qty",
+              "ship_date",
+              "supplier",
+              "sa_number",
+              "variant",
+              "plant_dock",
+              "batch",
+              "gross_weight"
+            ]
+          },
+          "text": { "type": ["string", "null"] },
+          "score": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    }
+  }
+}

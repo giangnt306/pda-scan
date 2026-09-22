@@ -1,8 +1,8 @@
 # Data Model
 
 This document specifies the field schema, the normalisation rules, the
-provenance model, and the validation rules implemented in `src/App.jsx` and
-`src/lib/normalize.js`.
+provenance model, and the validation rules implemented in `apps/webapp/src/App.jsx` and
+`apps/webapp/src/lib/normalize.js`.
 
 The schema describes automotive part labels as they are printed in the target
 warehouse. Field names, formats, and the regular expressions below were derived
@@ -73,7 +73,7 @@ and belongs to the label rather than to the moment of entry.
 
 ## Normalisation
 
-`src/lib/normalize.js` converts raw label text into the forms the controls
+`apps/webapp/src/lib/normalize.js` converts raw label text into the forms the controls
 expect. It runs on recognition results before the value reaches `values`.
 
 ### Dates

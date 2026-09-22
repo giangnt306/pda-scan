@@ -1,0 +1,23 @@
+{
+  "name": "backend-down-30s",
+  "description": "Main Backend ngừng hoạt động 30 s; kiểm thiết bị chờ và hệ thống lành lại không mất phiếu",
+  "requires": ["sim"],
+  "settleMs": 10000,
+  "timeoutMs": 180000,
+  "steps": [
+    { "at": 0, "action": "devices.start", "devices": 5, "rate": 12, "recognize": false },
+    { "at": 15000, "action": "note", "text": "— Máy chủ ngừng hoạt động —" },
+    { "at": 15000, "action": "sim.set", "scope": "global", "patch": { "backend": { "mode": "down" } } },
+    { "at": 45000, "action": "note", "text": "— Máy chủ hoạt động trở lại —" },
+    { "at": 45000, "action": "sim.clear", "scope": "global" },
+    { "at": 75000, "action": "devices.stop" }
+  ],
+  "expect": [
+    { "check": "counter.blocked", "op": ">=", "value": 5 },
+    { "check": "receipts.delta", "op": ">=", "value": 8 },
+    { "check": "requestId.unique", "op": "==", "value": true },
+    { "check": "recovery.ms", "op": "<=", "value": 10000 },
+    { "check": "status.backendEnd", "op": "==", "value": "up" },
+    { "check": "counter.otherError", "op": "==", "value": 0 }
+  ]
+}

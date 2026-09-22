@@ -1,0 +1,37 @@
+{
+  "name": "async-recognition-no-stuck-jobs",
+  "description": "RECOGNITION_MODE=async: đường 202 + thăm dò chạy thật, hàng chờ tràn và chờ quá hạn — sau khi lắng KHÔNG còn dòng nhận dạng nào treo pending",
+  "requires": ["sim"],
+  "serverEnv": {
+    "RECOGNITION_MODE": "async",
+    "RECOGNITION_MAX_CONCURRENT": "2",
+    "RECOGNITION_MAX_WAITING": "12",
+    "RECOGNITION_MAX_WAIT_MS": "3000"
+  },
+  "settleMs": 20000,
+  "timeoutMs": 240000,
+  "steps": [
+    { "at": 0, "action": "note", "text": "Giai đoạn 1 — 3 thiết bị đi đường 202 + thăm dò, OCR bình thường" },
+    { "at": 0, "action": "devices.start", "devices": 3, "rate": 12, "recognize": true },
+    { "at": 25000, "action": "note", "text": "Giai đoạn 2 — OCR chậm 6 s: hàng chờ tràn và có lượt chờ quá RECOGNITION_MAX_WAIT_MS" },
+    { "at": 25000, "action": "sim.set", "scope": "global", "patch": { "ocr": { "mode": "slow", "delayMs": 6000 } } },
+    { "at": 26000, "action": "uploads.burst", "count": 14, "concurrency": 14 },
+    { "at": 45000, "action": "note", "text": "— OCR trở lại bình thường —" },
+    { "at": 45000, "action": "sim.clear", "scope": "global" },
+    { "at": 46000, "action": "devices.stop" }
+  ],
+  "expect": [
+    { "check": "status.recognitionMode", "op": "==", "value": "async" },
+    { "check": "counter.recognizeAccepted202", "op": ">=", "value": 12 },
+    { "check": "counter.recognizePolls", "op": ">=", "value": 12 },
+    { "check": "recognitions.pendingEnd", "op": "==", "value": 0 },
+    { "check": "recognitions.delta", "op": ">=", "value": 20 },
+    { "check": "recognitions.byStatus", "status": "completed", "op": ">=", "value": 8 },
+    { "check": "recognitions.byStatus", "status": "failed", "op": ">=", "value": 1 },
+    { "check": "queue.peakWaiting", "op": ">=", "value": 1 },
+    { "check": "queue.peakInflight", "op": "<=", "value": 2 },
+    { "check": "receipts.delta", "op": ">=", "value": 8 },
+    { "check": "requestId.unique", "op": "==", "value": true },
+    { "check": "counter.otherError", "op": "==", "value": 0 }
+  ]
+}
