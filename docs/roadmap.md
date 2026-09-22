@@ -1,150 +1,156 @@
 # Roadmap
 
-## Current state
+## Current State
 
-The prototype implements the complete operator workflow with recognition and
-persistence stubbed locally. An operator may open the camera, photograph the
-label for recognition, review proposed values with confidence indication, correct any field, and confirm a validated
-record. Nothing leaves the browser.
+The prototype covers the complete operator workflow. Recognition and persistence are currently local stubs, so no data leaves the browser.
 
-Implemented:
+### Implemented
 
-- Mobile-oriented layout with safe-area handling and glove-sized targets
-- Data-driven form schema covering six mandatory and seven optional fields,
-  derived from physical sample labels
-- Live camera sheet over `getUserMedia`, with torch control and haptic feedback
-- Label capture through `ImageCapture.takePhoto()` at full sensor resolution,
-  with a downscaled JPEG for display and recognition
-- Saving the original photo to the device (download or Android share sheet)
-- Normalisation of the date and code formats observed on the sample labels
-- Provenance model distinguishing recognised and manual data, with confidence
-  downgrade on failed normalisation
-- Per-field format validation with deferred error presentation
-- Session counter and confirmation toast
+* Mobile-first layout with safe-area support and glove-friendly controls
+* Data-driven form with 6 required and 7 optional fields
+* Camera sheet using `getUserMedia`, including torch and haptic feedback
+* Full-resolution label capture via `ImageCapture.takePhoto()`
+* Downscaled JPEG for preview and recognition
+* Original photo download and Android share-sheet support
+* Date and code normalisation based on sample labels
+* Provenance tracking for recognised vs. manual values
+* Confidence downgrade when normalisation fails
+* Per-field validation with deferred error display
+* Session counter and confirmation toast
 
-Not implemented:
+### Not Implemented
 
-- Barcode scanning
-- Recognition service and image upload
-- Persistence backend
-- Authentication and operator identity
-- Offline capability and submission queueing
-- Automated tests
-- Label capture on browsers without the ImageCapture API (manual entry still works)
+* Barcode scanning
+* Recognition API and image upload
+* Persistence backend
+* Authentication/operator identity
+* Offline queueing and retry
+* Automated tests
+* `ImageCapture` support outside compatible browsers
 
-## Outstanding work
+Manual entry remains available when `ImageCapture` is unsupported.
 
-### Recognition integration
+## Outstanding Work
 
-Replace the body of `recognize` (`src/App.jsx`, line 223) with an upload of
-`frame.blob` (the downscaled photo) and consumption of the service response. The response contract is
-defined by the shape of `FAKE_AI` (line 67) and is documented in
-[data-model.md](data-model.md). `applyAiResult` is written against the real
-contract and should not need to change.
+### 1. Recognition Integration
 
-The following must be addressed during integration:
+Replace the local `recognize` implementation in `src/App.jsx` with an upload of `frame.blob` and handling of the service response.
 
-- **Select-field normalisation.** Proposed values for `select` fields must match
-  an entry in the corresponding `options` array exactly, otherwise the control
-  renders as unselected. `supplier` matches by construction in the stub and will
-  not in production. A fuzzy match against `options`, falling back to
-  `src: "doubt"`, is the likely shape of the fix.
-- **Unknown keys.** Keys absent from `ALL_FIELDS` are written into `values` and
-  then ignored by every component, so schema drift between service and form
-  fails silently. At minimum this should warn.
-- **Failure state.** `recognize` has no failure path: a rejected upload would
-  leave `reading` true and the interface stuck. Both a failure state and a retry
-  affordance are required before this is usable off a desk.
-- **Cancellation.** A second capture while the first is in flight is not
-  guarded. The later response should win, or the earlier request should be
-  aborted.
-- **Threshold calibration.** `SURE_THRESHOLD` is set to `0.9` as a prototype
-  value. It should be set from measured accuracy of the deployed model, and it
-  should remain a single adjustable constant.
+The response contract is represented by `FAKE_AI` and documented in [data-model.md](data-model.md). `applyAiResult` already follows this contract.
 
-### Persistence
+Before integration, address:
 
-Replace the `console.log` in `confirm` (line 291) with a request to the
-persistence endpoint. Submit `metas` and the captured photo alongside `values`,
-so that provenance is retained for later accuracy measurement and a disputed
-record can be checked against its label.
+* **Select fields:** AI values must exactly match an entry in `options`. Production values such as `supplier` may differ. Use fuzzy matching and fall back to `src: "doubt"` when no match is reliable.
+* **Unknown keys:** Keys not in `ALL_FIELDS` are silently ignored. At minimum, log or warn about schema mismatches.
+* **Failures:** A rejected request currently leaves `reading` active. Add an error state and retry action.
+* **Cancellation:** Prevent overlapping requests by aborting the previous request or ensuring only the latest response is applied.
+* **Confidence threshold:** `SURE_THRESHOLD = 0.9` is provisional. Calibrate it using measured model accuracy and keep it as a single configurable constant.
 
-The form resets immediately on confirmation. Once submission is remote, reset
-must be deferred until the request succeeds, and a failed submission must
-preserve the entered data.
+### 2. Persistence
 
-### Reliability
+Replace the `console.log` in `confirm` with a persistence request.
 
-Warehouse connectivity is frequently poor. Submissions should be queued locally
-and retried rather than lost, and the operator should be informed of the queue
-state. This has implications for the confirmation flow and for the session
-counter, which currently counts local confirmations rather than persisted
-records.
+Submit:
 
-Capture and normalisation both work offline; recognition and persistence do
-not. A queued-submission design would let an operator continue working through
-an outage using manual entry alone, which is worth
-preserving as a constraint on whatever queueing mechanism is chosen.
+* `values`
+* `metas`
+* Captured photo
 
-### Schema and format patterns
+Keeping provenance with the record allows later accuracy analysis and label verification.
 
-`PART_NUMBER_RE` and `SA_NUMBER_RE` are inferred from a handful of sample
-labels. Before a field trial they should be checked against a wider sample,
-because a pattern that rejects a legitimate part number blocks a receipt
-outright. The same applies to `normalizeDate`, which assumes day-first ordering
-for ambiguous separated dates.
+Once persistence is remote:
 
-Note also that the comment at the head of `App.jsx` refers to a `samples/`
-directory that is not in the repository. Either the sample labels should be
-committed, or the reference should be corrected to say where they live.
+* Reset the form only after a successful request.
+* Preserve all entered data when submission fails.
 
-### Known rough edges
+### 3. Reliability and Offline Support
 
-- **Optional-field errors block silently.** `confirm` aborts when any error is
-  present, including on an optional field, but the confirm button's `disabled`
-  state reflects only mandatory fields. An invalid `saNumber` therefore leaves
-  the button enabled and the press apparently inert, with the error visible only
-  if the optional section is expanded. Either the button state should account
-  for all errors, or confirmation should scroll to the offending field.
-- **Capture latency.** `takePhoto()` at maximum sensor resolution can take
-  noticeably longer than a preview frame, and the shutter shows "giữ yên máy"
-  meanwhile. Measure it on the target PDA; if it is too slow, request a lower
-  `imageWidth` rather than reintroducing video-frame capture.
-- **Original upload.** Only the downscaled copy is used today. Decide whether
-  the backend needs the full-resolution original before building persistence.
+Warehouse connectivity may be unreliable. Submissions should therefore be queued locally and retried rather than lost.
 
-### Testing
+The UI should clearly show the queue state.
 
-There are no automated tests. The first candidates are `normalizeDate` and the
-format patterns: they are pure, they encode assumptions drawn from a small
-sample, and they are the components most likely to be wrong in a way the
-interface will not reveal. [development.md](development.md) shows a one-line
-check that can serve until a test runner is justified.
+Currently:
 
-## Deferred decisions
+* Capture works offline.
+* Normalisation works offline.
+* Recognition requires the network.
+* Persistence requires the network.
 
-The following were considered and deliberately postponed. Each should be
-revisited only when a concrete requirement justifies it.
+A queue should allow operators to continue with manual entry during outages.
 
-| Item                     | Reason for deferral                                                          |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| TypeScript               | Few modules; type errors are not the present failure mode                    |
-| Component library        | One screen, one form; styling requirements are specific to the environment   |
-| State management library | State is local to a single component                                         |
-| Routing                  | The application has one screen; the camera sheet is conditional rendering, not a route |
-| Test framework           | One pure module currently warrants testing; `node -e` covers it              |
-| iOS support              | The target hardware is Android PDAs                                          |
+The session counter must also be revisited because it currently counts local confirmations, not successfully persisted records.
 
-## Structural note
+## Schema and Validation
 
-`App.jsx` holds the field schema, the form components, and all state, at 462
-lines. The camera and normalisation concerns have already been
-extracted into `src/lib/` and `ScannerSheet.jsx`, which is where the bulk of the
-growth went.
+`PART_NUMBER_RE` and `SA_NUMBER_RE` are based on a small set of sample labels. Validate them against a larger sample before field testing to avoid rejecting legitimate values.
 
-The next division, when one becomes necessary, is to extract the field schema
-and the recognition contract into their own module. Those are the parts that
-change most often and that a backend integration needs to reference
-independently of the interface. That split has not been made yet because nothing
-outside `App.jsx` consumes the schema today; do it when the second consumer
-appears, not on principle.
+`normalizeDate` also assumes day-first ordering for ambiguous separated dates. This assumption should be verified against real data.
+
+`App.jsx` references a `samples/` directory that is not currently in the repository. Either commit the samples or update the documentation to point to their actual location.
+
+## Known Rough Edges
+
+### Optional-field validation
+
+`confirm` blocks submission when **any** error exists, including errors in optional fields. However, the confirm button only reflects errors in required fields.
+
+For example, an invalid `saNumber` can leave the button enabled while pressing it appears to do nothing if the optional section is collapsed.
+
+Fix by either:
+
+* Including all validation errors in the button state, or
+* Scrolling to the invalid field when confirmation fails.
+
+### Capture latency
+
+Maximum-resolution `takePhoto()` may be noticeably slower than capturing a video frame.
+
+Measure this on the target PDA. If necessary, request a smaller `imageWidth` rather than restoring video-frame capture.
+
+### Original image upload
+
+Recognition currently receives only the downscaled image. Decide whether the backend also needs the full-resolution original before implementing persistence.
+
+## Testing
+
+There is currently no automated test suite.
+
+The first tests should cover:
+
+* `normalizeDate`
+* `PART_NUMBER_RE`
+* `SA_NUMBER_RE`
+
+These are pure logic based on assumptions from a small sample and are therefore easy to test and relatively likely to expose hidden problems.
+
+Until a test runner is introduced, the one-line check documented in [development.md](development.md) can be used.
+
+## Deferred Decisions
+
+These technologies were considered but intentionally postponed:
+
+| Item                     | Reason                                                   |
+| ------------------------ | -------------------------------------------------------- |
+| TypeScript               | The current failure modes are not type-related           |
+| Component library        | One screen with highly specific UI requirements          |
+| State management library | State is local to one component                          |
+| Routing                  | The app has one screen; the camera is conditional UI     |
+| Test framework           | Only a small pure module currently needs automated tests |
+| iOS support              | Target devices are Android PDAs                          |
+
+Revisit these only when a concrete requirement justifies them.
+
+## Structure
+
+`App.jsx` currently contains the field schema, form components, and application state in about 462 lines.
+
+Camera and normalisation logic have already been extracted into `ScannerSheet.jsx` and `src/lib/`.
+
+The next likely extraction is:
+
+* Field schema
+* Recognition contract
+
+These change independently and will eventually need to be shared with backend integration or other consumers.
+
+Do not split them prematurely. Extract them when a second consumer appears.

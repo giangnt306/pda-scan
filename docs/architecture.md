@@ -2,227 +2,180 @@
 
 ## Purpose
 
-`pda-scan` is a mobile-first web application for warehouse goods receipt. An
-operator opens a live camera, photographs a part label, and reviews, corrects,
-and confirms the resulting record before it is persisted.
+`pda-scan` is a mobile-first web app for warehouse goods receipt. An operator:
 
-The application is currently a functional prototype. The user interface, label
-capture, and the review workflow are complete; the image-recognition service
-and the persistence backend are not yet implemented and are represented
-by local stubs.
+1. Opens the live camera.
+2. Captures a part label.
+3. Reviews and corrects the extracted data.
+4. Confirms the record before persistence.
 
-## Technology stack
+The app is currently a functional prototype. The UI, label capture, and review flow are complete. Image recognition and persistence are still local stubs.
 
-| Component                    | Version | Role                                       |
-| ---------------------------- | ------- | ------------------------------------------ |
-| Vite                         | 5.4     | Development server and production bundler  |
-| React                        | 18.3    | User interface library                     |
-| `@vitejs/plugin-react`     | 4.7     | JSX transformation and Fast Refresh        |
-| `@vitejs/plugin-basic-ssl` | 1.2     | Self-signed certificate for the dev server |
+## Technology Stack
 
-Beyond React the project carries no runtime dependencies. There is no router,
-no external state-management library, no component library, and no CSS framework.
-TypeScript is not used. Styling is hand-authored CSS.
+| Component                    | Version | Role                                      |
+| ---------------------------- | ------: | ----------------------------------------- |
+| Vite                         |     5.4 | Development server and production bundler |
+| React                        |    18.3 | UI library                                |
+| `@vitejs/plugin-react`     |     4.7 | JSX transformation and Fast Refresh       |
+| `@vitejs/plugin-basic-ssl` |     1.2 | Self-signed HTTPS for development         |
 
-This minimalism is a design decision rather than an omission. The application
-consists of one screen, one form, one camera sheet, and no client-side
-navigation; none of the libraries listed above would earn their maintenance cost
-at the present scope.
+The project intentionally has no router, state-management library, component library, CSS framework, or TypeScript. Styling is written in plain CSS.
 
-Barcode scanning is not implemented. Field values come from label capture and
-recognition, or from manual entry.
+This is appropriate for the current scope: one screen, one form, one camera sheet, and no client-side navigation.
 
-## Source layout
+Barcode scanning is not implemented. Values come from label recognition or manual entry.
 
-```
-index.html            Vite entry point; document shell, viewport, font loading
-vite.config.js        HTTPS dev server, host binding, plugin registration
-src/main.jsx          React root mount
+## Source Layout
+
+```text
+index.html            Vite entry point, document shell, viewport, fonts
+vite.config.js        HTTPS dev server and plugin configuration
+src/main.jsx          React root
 src/App.jsx           Field schema, form components, application state
-src/ScannerSheet.jsx  Full-screen camera sheet: live preview and label capture
-src/lib/camera.js     getUserMedia, torch, ImageCapture photo, save/share, haptics
-src/lib/normalize.js  Date and code normalisation, label format patterns
-src/index.css         Design tokens and all component styling
-docs/                 This documentation
+src/ScannerSheet.jsx  Full-screen camera and label capture
+src/lib/camera.js     Camera, torch, photo, save/share, haptics
+src/lib/normalize.js  Date/code normalization and label patterns
+src/index.css         Design tokens and component styling
+docs/                 Documentation
 ```
 
-Line counts as of this document: `App.jsx` 462, `index.css` 732,
-`ScannerSheet.jsx` 147, `camera.js` 167, `normalize.js` 57, `main.jsx` 10.
+Current file sizes: `App.jsx` 462 lines, `index.css` 732, `ScannerSheet.jsx` 147, `camera.js` 167, `normalize.js` 57, `main.jsx` 10.
 
-## Module responsibilities
+## Module Responsibilities
 
 ### `index.html`
 
-Under Vite, `index.html` is the build entry point rather than a static asset.
-Vite parses it, resolves the `<script type="module">` reference to
-`src/main.jsx`, and builds the dependency graph from there.
+Vite uses `index.html` as the application entry point and resolves `src/main.jsx` from it.
 
-The document head is configured for handheld use:
+The document is optimized for handheld use:
 
-- `lang="vi"` drives keyboard selection, autocorrection, and assistive
-  technology pronunciation.
-- `maximum-scale=1` suppresses double-tap zoom, which would otherwise disturb
-  the layout during rapid data entry. Note that current versions of iOS Safari
-  ignore this directive.
-- `viewport-fit=cover` permits the layout to extend into display cutouts and is
-  paired with `env(safe-area-inset-*)` in the stylesheet.
-- `theme-color` matches the application header colour.
-- Barlow (body text) and IBM Plex Mono (identifiers) are loaded from Google
-  Fonts with `preconnect` hints.
+- `lang="vi"` supports Vietnamese keyboard behavior, autocorrection, and assistive technology.
+- `maximum-scale=1` reduces accidental zoom during data entry. Current iOS Safari may ignore it.
+- `viewport-fit=cover` supports display cutouts with `env(safe-area-inset-*)`.
+- `theme-color` matches the app header.
+- Barlow and IBM Plex Mono are loaded from Google Fonts with `preconnect`.
 
 ### `src/main.jsx`
 
-Mounts the React tree using the React 18 `createRoot` API and wraps the
-application in `StrictMode`. `StrictMode` is a development-only construct: it
-double-invokes renders and effect cycles in order to surface impure side
-effects, and is eliminated from production builds.
+Mounts the React app with React 18 `createRoot` and `StrictMode`.
 
-Note that the camera sheet's effect is written to tolerate this
-double-invocation; see the teardown discussion under `ScannerSheet.jsx`.
+`StrictMode` is development-only and may run renders/effects twice. The camera effect is designed to handle this safely.
 
 ### `src/App.jsx`
 
-The form half of the application: the field schema, the components that render
-it, and all shared state.
+Contains the form schema, form components, and application state.
 
-`Field` (line 82) renders one form control. It selects the control type from the
-field descriptor, applies the provenance attribute used for styling, and renders
-the provenance badge and validation message.
-
-`FieldList` (line 142) walks a field array and groups consecutive descriptors
-marked `half` into a single horizontal row.
-
-`App` (line 179) holds all application state and composes the screen: capture
-panel, photo information panel, provenance legend, mandatory field group,
-optional field group, action bar, transient toast, and the camera sheet when
-open.
+- `Field` renders a field, applies its provenance state, and shows validation feedback.
+- `FieldList` groups consecutive fields marked `half` into one row.
+- `App` manages the full screen: capture panel, photo information, provenance legend, required/optional fields, action bar, toast, and camera sheet.
 
 ### `src/ScannerSheet.jsx`
 
-A full-screen camera sheet, mounted only while `cameraOpen` state is true. It
-shows the live camera as a viewfinder with a framing window and a shutter
-button. The shutter takes a still photo through `ImageCapture.takePhoto()` and
-hands it to `App`, which saves the original and sends a downscaled copy to the
-recognition path, then the sheet closes. On a browser without `ImageCapture`
-the shutter is hidden and the sheet can only be closed; see
-[image-capture.md](image-capture.md).
+Provides the full-screen camera UI:
 
-**Teardown.** `aliveRef` is checked after every `await`, and the effect's
-cleanup stops the media tracks. This is what prevents the camera indicator
-remaining lit, and what makes `StrictMode`'s double mount harmless.
+- Live camera preview with a framing window.
+- Shutter button using `ImageCapture.takePhoto()`.
+- Original photo saved by `App`.
+- Downscaled image sent to the recognition flow.
+- Sheet closes after capture.
 
-Camera failures are mapped to operator-facing Vietnamese text through
-`ERROR_TEXT`, keyed by `DOMException.name`. The insecure-context and
-permission-denied cases carry recovery instructions rather than a bare error,
-since both are recoverable by the operator.
+If `ImageCapture` is unavailable, the shutter is hidden and the sheet can only be closed.
+
+**Cleanup:** `aliveRef` is checked after each `await`, and cleanup stops all media tracks. This prevents the camera indicator from remaining active and makes `StrictMode`'s double mount safe.
+
+Camera errors are mapped to Vietnamese operator messages through `ERROR_TEXT`. Insecure-context and permission errors include recovery instructions.
 
 ### `src/lib/camera.js`
 
-Wraps the MediaDevices API. `startCamera` checks `isSecureContext` and API
-availability before requesting the stream, so the failure modes surface as named
-exceptions rather than as an unexplained rejection. The video constraints use
-`ideal` rather than `exact` for `facingMode`, which keeps the application usable
-on a development laptop that has only a front-facing camera.
+Wraps the browser MediaDevices API.
 
-`takeFullPhoto` asks the sensor for a real still image at the maximum
-resolution reported by `getPhotoCapabilities()`, retrying without size settings
-if the device rejects them. `getPhotoInfo` reports that maximum for display.
-`downscale` scales the long edge down to 1280 px and encodes JPEG at quality
-0.82, roughly 150 KB, for the viewfinder and the recognition upload.
-`buildFilename`, `saveToDevice`, and `shareFile` store the original on the
-device. The capture pipeline is described in [image-capture.md](image-capture.md).
+- `startCamera` checks secure-context and API support before requesting the camera.
+- `facingMode` uses `ideal` rather than `exact`, allowing development on devices with only a front camera.
+- `takeFullPhoto` requests the sensor's maximum supported still-image resolution and retries without size settings if needed.
+- `getPhotoInfo` exposes the maximum photo resolution.
+- `downscale` reduces the long edge to 1280 px and encodes JPEG at quality `0.82` (about 150 KB).
+- `buildFilename`, `saveToDevice`, and `shareFile` handle the original image.
+- `torchCapable` and `setTorch` control the device torch through `MediaStreamTrack.applyConstraints`. Unsupported or failed torch operations hide the button.
+- `buzz` wraps `navigator.vibrate`; it is a no-op where vibration is unavailable.
 
-`torchCapable` and `setTorch` drive the device flash through
-`MediaStreamTrack.applyConstraints`. Support is not universal, so both failure
-paths are handled: the button is hidden when the capability is absent, and it is
-hidden after the fact if applying the constraint throws.
-
-`buzz` wraps `navigator.vibrate`, which is a no-op or absent on some platforms.
+See `image-capture.md` for the capture pipeline.
 
 ### `src/lib/normalize.js`
 
-Converts raw text from the recognition service into the forms the schema
-expects, and holds the regular expressions derived from the sample labels. See [data-model.md](data-model.md) for the rules
-themselves.
+Converts raw recognition text into the schema's expected formats and contains regular expressions derived from the sample labels.
+
+See `data-model.md` for the detailed rules.
 
 ### `src/index.css`
 
-Defines design tokens on `:root` and styles every component, including the
-camera sheet.
+Defines design tokens and styles all components, including the camera sheet.
 
-Several choices target the operating environment explicitly:
+Key environment-specific choices:
 
-- `--tap: 52px` exceeds the conventional 44px minimum, because operators may be
-  wearing gloves.
-- `--bg: #e9ecf0` is a cool grey rather than pure white, to reduce glare under
-  warehouse lighting.
-- `min-height: 100dvh` accounts for the collapsing mobile address bar, which
-  `100vh` handles incorrectly.
-- `overscroll-behavior-y: none` disables pull-to-refresh, preventing accidental
-  loss of unsaved form data.
-- `env(safe-area-inset-top)` and `env(safe-area-inset-bottom)` inset the fixed
-  header, the action bar, and the camera sheet's own controls on devices with display
-  cutouts.
-- `max-width: 520px` with automatic horizontal margins preserves the handheld
-  layout when the application is opened on a desktop browser.
-- A `prefers-reduced-motion` query disables transitions for users who request
-  reduced motion.
+- `--tap: 52px` provides a larger touch target for gloved operators.
+- `--bg: #e9ecf0` reduces glare compared with pure white.
+- `min-height: 100dvh` handles the mobile browser address bar correctly.
+- `overscroll-behavior-y: none` prevents pull-to-refresh and accidental loss of unsaved data.
+- Safe-area insets protect fixed controls on devices with display cutouts.
+- `max-width: 520px` keeps the handheld layout on desktop browsers.
+- `prefers-reduced-motion` disables transitions when requested.
 
-## Rendering and data flow
+## Rendering and Data Flow
 
+```text
+Live camera
+    ↓
+Take photo
+    ↓
+Recognition (stub)
+    ↓
+Values + provenance
+    ↓        ←── Manual entry
+Review and correction
+    ↓
+Validation
+    ↓
+Confirmation
+    ↓
+Persistence (stub)
 ```
-live camera ─→ takePhoto ─→ recognition ─→ values + provenance
-                               (stubbed)          metadata
-                                                     ↓   ←── manual entry
-                                       operator review and correction
-                                                     ↓
-                                validation → confirmation → persistence
-                                                              (stubbed)
+
+Application state lives in `App` with `useState` and is passed through props. There is no context, reducer, or external store.
+
+Two state objects are central:
+
+- `values`: current field values, keyed by field `key`.
+- `metas`: provenance information, including source, acquisition method, recognition confidence, and whether the operator edited the value.
+
+Validation is derived from `values` with `useMemo` rather than stored separately, keeping validation synchronized with the data.
+
+Provenance is exposed through data attributes such as `data-src` and `data-invalid`, which `index.css` uses to style the field indicator.
+
+## Image Capture
+
+The app uses `getUserMedia` for a live preview instead of a native file input. The previous prototype used:
+
+```html
+<input type="file" capture="environment">
 ```
 
-Application state is held in `App` using `useState` and passed downward through
-props. There is no context, no reducer, and no external store. Two state objects
-form the core of the design:
+The live preview was chosen so operators can verify label framing before taking the photo.
 
-- `values` — the current content of each field, keyed by field `key`.
-- `metas` — the provenance of that content: its origin, how it was obtained, the
-  recognition confidence, and whether the operator has since edited it.
+Because `getUserMedia` requires a secure context, it does not work over plain HTTP when accessed through a LAN address. The development server therefore uses HTTPS with a self-signed certificate. See `development.md`.
 
-Validation state is not stored. The `errors` object is derived from `values`
-through `useMemo` (line 191), which makes it impossible for validation results
-to drift out of step with the data they describe.
+The live video is used only for preview. Still images are captured with the `ImageCapture` API rather than by drawing the video to a canvas, which would limit the image to the stream resolution and processing.
 
-Provenance is communicated to the stylesheet through a data attribute. `Field`
-renders `data-src={src}`, and `index.css` matches on `[data-src="sure"]`,
-`[data-src="doubt"]`, and `[data-invalid="true"]` to colour the vertical
-indicator bar beside each control.
+See `image-capture.md` for details.
 
-## Image capture
+## Known Stubs
 
-Capture uses `getUserMedia` with a live preview rather than the native file
-input. The earlier prototype used `<input type="file" capture="environment">`,
-which required no permission handling and worked over plain HTTP; it was
-replaced because a live viewfinder lets the operator see that the label is
-framed before the shutter is pressed.
+| Location                 | Current behavior                        | Intended behavior                             |
+| ------------------------ | --------------------------------------- | --------------------------------------------- |
+| `FAKE_AI` (line 67)    | Returns a hard-coded recognition result | Use the recognition service response          |
+| `recognize` (line 223) | Waits 900 ms, then applies`FAKE_AI`   | Upload`frame.blob` and process the response |
+| `confirm` (line 291)   | Logs the payload to the console         | Submit the payload to the backend             |
 
-The cost of that change is a secure-context requirement: `getUserMedia` is
-unavailable over plain HTTP to a LAN address. The development server therefore
-runs HTTPS with a self-signed certificate; see [development.md](development.md).
+Each stub includes a source comment describing the implementation step that will replace it.
 
-The live video feeds the preview only. Still photos are taken exclusively through the ImageCapture API; drawing a video frame to a
-canvas is no longer used, because it is limited to the stream resolution
-(typically 1920×1080) and to the stream's video processing. Details are in
-[image-capture.md](image-capture.md).
-
-## Known stubs
-
-| Location                 | Current behaviour                     | Intended behaviour                              |
-| ------------------------ | ------------------------------------- | ----------------------------------------------- |
-| `FAKE_AI` (line 67)    | Hard-coded recognition result         | Response from the recognition service           |
-| `recognize` (line 223) | Waits 900 ms, then applies`FAKE_AI` | Uploads`frame.blob` and consumes the response |
-| `confirm` (line 291)   | Logs the payload to the console       | Submits the payload to the backend              |
-
-Both stub sites carry source comments identifying the implementation step that
-will replace them. `applyAiResult`, which normalises and merges the result, is
-written against the real contract and is not expected to change when the service
-is connected.
+`applyAiResult` already normalizes and merges recognition results against the intended contract, so it should not need to change when the real service is connected.

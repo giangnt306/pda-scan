@@ -2,10 +2,10 @@
 
 ## Prerequisites
 
-Node.js with npm. No other tooling is required.
+* Node.js and npm
+* An Android phone/PDA running Chrome for meaningful device testing
 
-An Android phone or PDA running Chrome is required for meaningful testing; see
-[Testing on a physical device](#testing-on-a-physical-device).
+No other tooling is required.
 
 ## Setup
 
@@ -15,108 +15,105 @@ npm install
 
 ## Commands
 
-| Command           | Effect                                                |
-| ----------------- | ----------------------------------------------------- |
-| `npm run dev`     | Starts the Vite development server with Fast Refresh  |
-| `npm run build`   | Produces a production bundle in `dist/`               |
-| `npm run preview` | Serves the built bundle for verification              |
+| Command           | Description                            |
+| ----------------- | -------------------------------------- |
+| `npm run dev`     | Start the Vite development server      |
+| `npm run build`   | Build the production bundle in `dist/` |
+| `npm run preview` | Preview the production build           |
 
-## Network and HTTPS configuration
+## Network and HTTPS
 
-`vite.config.js` sets `server.host` to `true`, which binds the development
-server to all interfaces rather than to `localhost` alone. This is what permits
-a handset on the same network to reach the server. The port is fixed at `5173`.
-The `dev` script also passes `--host`, which is redundant but harmless.
+The Vite server is configured to:
 
-The configuration additionally registers `@vitejs/plugin-basic-ssl`, so the dev
-server is served over HTTPS with a self-signed certificate. This is not
-optional: `getUserMedia` is only available in a secure context, and a plain HTTP
-LAN address is not one. Without it the camera sheet fails immediately with the
-`SecurityError` branch of `ERROR_TEXT`.
+* Listen on all network interfaces (`server.host: true`)
+* Use port `5173`
+* Serve HTTPS using `@vitejs/plugin-basic-ssl`
 
-The consequence is a certificate warning on first visit from each device.
-Chrome shows "Your connection is not private"; **Advanced → Proceed** accepts
-the certificate for that origin, and the origin is then treated as secure. This
-is done once per device.
+HTTPS is required because `getUserMedia` only works in a secure context. This allows an Android device on the same network to access the development server.
 
-### Avoiding the warning
+The first visit from each device will show a certificate warning:
 
-An alternative to accepting the certificate is to tell Chrome to treat the plain
-HTTP origin as secure. On Chrome for Android, open
+**Your connection is not private → Advanced → Proceed**
 
-```
+This only needs to be accepted once per device.
+
+### Using HTTP instead
+
+For local development, Chrome can treat the HTTP origin as secure:
+
+```text
 chrome://flags/#unsafely-treat-insecure-origin-as-secure
 ```
 
-enter `http://192.168.1.xx:5173`, set the flag to **Enabled**, and restart
-Chrome. Then remove `basicSsl()` from `vite.config.js` to return to HTTP.
+Add the current LAN address, for example:
 
-This is a development convenience only. A real deployment has a real
-certificate and needs neither the flag nor the plugin.
+```text
+http://192.168.1.xx:5173
+```
 
-## Testing on a physical device
+Set the flag to **Enabled** and restart Chrome. Then remove `basicSsl()` from `vite.config.js`.
 
-The application targets handheld use and should be exercised on a real device
-rather than in a desktop browser's device emulation. Camera behaviour, still-photo
-resolution and latency, torch availability, and haptic feedback all differ.
+This is for development only. Production deployments should use a valid TLS certificate.
 
-1. Connect the development machine and the handset to the same network.
-2. Run `npm run dev`.
-3. Open the address printed under `Network:` in the Vite output. Do not reuse an
-   address recorded from an earlier session; DHCP may have reassigned it.
-4. Accept the certificate warning as described above.
-5. Grant the camera permission when Chrome prompts.
+## Testing on a Physical Device
 
-### Camera failure modes
+Test on a real Android device rather than desktop device emulation because camera resolution, latency, torch support, and haptics can differ.
 
-`ScannerSheet` maps `DOMException.name` to operator-facing text. When testing
-the failure paths:
+1. Connect the computer and device to the same network.
+2. Run:
 
-| Condition                     | Reproduce by                                             |
-| ----------------------------- | -------------------------------------------------------- |
-| `SecurityError`               | Opening the app over plain HTTP                          |
-| `NotAllowedError`             | Denying the permission prompt, or revoking it in site settings |
-| `NotFoundError`               | Running on a machine with no camera                      |
-| `NotReadableError`            | Holding the camera open in another application           |
-| `NotSupportedError`           | A browser without `mediaDevices`                         |
+   ```bash
+   npm run dev
+   ```
+3. Open the address shown under `Network:` in the Vite output.
+4. Always use the current address; DHCP may change the device IP.
+5. Accept the certificate warning if using HTTPS.
+6. Grant camera permission when prompted.
 
-A denied permission is remembered per origin. Recovering requires the lock icon
-in the address bar rather than a reload, which is why that instruction is in the
-error text.
+### Camera Errors
 
-### Label capture
+`ScannerSheet` maps `DOMException.name` to user-facing error messages.
 
-Photos are taken only through the ImageCapture API. Chrome for Android supports
-it; Firefox and Safari do not. Where it is missing, the sheet subtitle reads
-"Trình duyệt không hỗ trợ ImageCapture — không chụp được nhãn" and the shutter
-is hidden; fields can still be filled in by hand.
+| Error               | How to reproduce                      |
+| ------------------- | ------------------------------------- |
+| `SecurityError`     | Open the app over plain HTTP          |
+| `NotAllowedError`   | Deny or revoke camera permission      |
+| `NotFoundError`     | Use a device without a camera         |
+| `NotReadableError`  | Use the camera in another application |
+| `NotSupportedError` | Use a browser without `mediaDevices`  |
 
-When checking capture on a device:
+Camera permission is stored per origin. After denying permission, change it through the address-bar site settings rather than simply reloading the page.
 
-- The sheet subtitle shows the maximum photo size the sensor offers, for example
-  `ImageCapture · tối đa 4000×3000`. The photo panel below the viewfinder shows
-  the size, file size, and capture time actually obtained.
-- With "Tự lưu ảnh gốc vào máy" ticked, each photo is downloaded as
-  `pda_<width>x<height>_<timestamp>.jpg`. From the second download Chrome may ask
-  once to allow multiple downloads.
-- "Lưu vào Thư viện ảnh" opens the Android share sheet; desktop browsers without
-  file sharing show a toast instead.
+## Label Capture
 
-A rejected `takePhoto()` is shown as an error above the shutter; there is no
-silent fallback to a video frame.
+Photos use the **ImageCapture API**. Chrome for Android supports it; Firefox and Safari do not.
 
-### Torch
+If `ImageCapture` is unavailable:
 
-The torch button appears only when the active video track reports the `torch`
-capability. Desktop webcams do not, and some Android devices report the
-capability but reject the constraint; in that case the button disappears after
-the first press. Both paths are expected behaviour, not a bug.
+* The shutter is hidden.
+* The subtitle shows:
+  `Trình duyệt không hỗ trợ ImageCapture — không chụp được nhãn`
+* Labels can still be entered manually.
 
-## Verifying normalisation
+When testing capture:
 
-`src/lib/normalize.js` is the one piece of logic with enough branching to be
-worth checking directly rather than through the interface. Its exports are pure
-functions, so a quick check needs no test framework:
+* The subtitle shows the sensor's maximum resolution, e.g. `ImageCapture · tối đa 4000×3000`.
+* The photo panel shows the actual resolution, file size, and capture time.
+* With **Tự lưu ảnh gốc vào máy** enabled, photos are downloaded as:
+  `pda_<width>x<height>_<timestamp>.jpg`
+* Chrome may ask once for permission to allow multiple downloads.
+* **Lưu vào Thư viện ảnh** opens the Android share sheet. Browsers without file-sharing support show a toast instead.
+* If `takePhoto()` fails, the error is shown above the shutter. The app does not silently fall back to a video frame.
+
+## Torch
+
+The torch button is shown only when the active video track reports `torch` support.
+
+Some devices may report support but reject the torch constraint. In that case, the button disappears after the first attempt. Both behaviours are expected.
+
+## Verifying Date Normalisation
+
+`src/lib/normalize.js` contains the main branching logic and can be checked directly without a test framework:
 
 ```bash
 node --input-type=module -e '
@@ -126,5 +123,6 @@ for (const s of ["18SEP2026", "2026/8/21", "15.09.2026", "15/9/2026", "20260821"
 '
 ```
 
-Expect the first five to yield ISO dates and the last to yield the empty string.
-There is no automated test suite yet; see [roadmap.md](roadmap.md).
+The first five inputs should produce ISO dates. `rubbish` should produce an empty string.
+
+There is currently no automated test suite. See [roadmap.md](roadmap.md).
