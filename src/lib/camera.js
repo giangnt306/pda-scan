@@ -89,7 +89,6 @@ export async function takeFullPhoto(stream) {
     /* không đọc được capabilities → để trình duyệt tự chọn */
   }
 
-  const t0 = performance.now();
   let blob;
   try {
     blob = await ic.takePhoto(settings);
@@ -97,10 +96,9 @@ export async function takeFullPhoto(stream) {
     // Một số máy từ chối cặp width/height cụ thể → thử lại không tham số
     blob = await ic.takePhoto();
   }
-  const ms = Math.round(performance.now() - t0);
 
   const { width, height } = await measure(blob);
-  return { blob, width, height, ms };
+  return { blob, width, height };
 }
 
 async function measure(blob) {
@@ -110,8 +108,7 @@ async function measure(blob) {
   return size;
 }
 
-/* Bản thu nhỏ để hiển thị và gửi OCR (bước 4).
- * Ảnh gốc vẫn được giữ nguyên để lưu vào máy. */
+/* Bản thu nhỏ để hiển thị và gửi OCR (bước 4). */
 export async function downscale(blob, maxSide = 1280, quality = 0.82) {
   const bmp = await createImageBitmap(blob);
   const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
@@ -129,7 +126,7 @@ export async function downscale(blob, maxSide = 1280, quality = 0.82) {
 }
 
 /* ================================================================
-   Lưu ảnh ra máy
+   ID ảnh
 ================================================================ */
 
 const stamp = (d) => {
@@ -142,33 +139,4 @@ const stamp = (d) => {
 /* ID ảnh: IMG-YYYYMMDD-HHMMSS-mmm, mili-giây để hai lần chụp liền nhau không trùng. */
 export function photoId(d) {
   return `IMG-${stamp(d)}-${String(d.getMilliseconds()).padStart(3, "0")}`;
-}
-
-export function buildFilename({ width, height }, d = new Date()) {
-  return `pda_${width}x${height}_${stamp(d)}.jpg`;
-}
-
-/* Tải xuống → Chrome Android lưu vào thư mục Download.
- * Từ lần tải thứ hai, Chrome có thể hỏi "Cho phép tải nhiều file" một lần. */
-export function saveToDevice(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-
-/* Mở bảng chia sẻ của Android → chọn "Lưu vào Ảnh" / Google Photos / Zalo… */
-export async function shareFile(blob, filename) {
-  const file = new File([blob], filename, { type: blob.type || "image/jpeg" });
-  if (!navigator.canShare?.({ files: [file] })) return false;
-  try {
-    await navigator.share({ files: [file], title: filename });
-    return true;
-  } catch {
-    return false; // người dùng bấm huỷ
-  }
 }

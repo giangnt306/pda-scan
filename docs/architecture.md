@@ -34,7 +34,7 @@ vite.config.js        HTTPS dev server and plugin configuration
 src/main.jsx          React root
 src/App.jsx           Field schema, form components, application state
 src/ScannerSheet.jsx  Full-screen camera and label capture
-src/lib/camera.js     Camera, torch, photo, save/share, haptics
+src/lib/camera.js     Camera, torch, photo, haptics
 src/lib/normalize.js  Date/code normalization and label patterns
 src/index.css         Design tokens and component styling
 docs/                 Documentation
@@ -76,7 +76,7 @@ Provides the full-screen camera UI:
 
 - Live camera preview with a framing window.
 - Shutter button using `ImageCapture.takePhoto()`.
-- Original photo saved by `App`.
+- Original photo kept in memory by `App`.
 - Downscaled image sent to the recognition flow.
 - Sheet closes after capture.
 
@@ -95,7 +95,7 @@ Wraps the browser MediaDevices API.
 - `takeFullPhoto` requests the sensor's maximum supported still-image resolution and retries without size settings if needed.
 - `getPhotoInfo` exposes the maximum photo resolution.
 - `downscale` reduces the long edge to 1280 px and encodes JPEG at quality `0.82` (about 150 KB).
-- `buildFilename`, `saveToDevice`, and `shareFile` handle the original image.
+- `photoId` builds the photo ID from the capture time.
 - `torchCapable` and `setTorch` control the device torch through `MediaStreamTrack.applyConstraints`. Unsupported or failed torch operations hide the button.
 - `buzz` wraps `navigator.vibrate`; it is a no-op where vibration is unavailable.
 
@@ -131,7 +131,9 @@ Take photo
 Recognition (stub)
     ↓
 Values + provenance
-    ↓        ←── Manual entry
+    |
+    |   ← Manual entry
+    ↓
 Review and correction
     ↓
 Validation

@@ -98,11 +98,6 @@ If `ImageCapture` is unavailable:
 When testing capture:
 
 * The subtitle shows the sensor's maximum resolution, e.g. `ImageCapture · tối đa 4000×3000`.
-* The photo panel shows the actual resolution, file size, and capture time.
-* With **Tự lưu ảnh gốc vào máy** enabled, photos are downloaded as:
-  `pda_<width>x<height>_<timestamp>.jpg`
-* Chrome may ask once for permission to allow multiple downloads.
-* **Lưu vào Thư viện ảnh** opens the Android share sheet. Browsers without file-sharing support show a toast instead.
 * If `takePhoto()` fails, the error is shown above the shutter. The app does not silently fall back to a video frame.
 
 ## Torch

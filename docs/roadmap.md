@@ -11,7 +11,6 @@ The prototype covers the complete operator workflow. Recognition and persistence
 * Camera sheet using `getUserMedia`, including torch and haptic feedback
 * Full-resolution label capture via `ImageCapture.takePhoto()`
 * Downscaled JPEG for preview and recognition
-* Original photo download and Android share-sheet support
 * Date and code normalisation based on sample labels
 * Provenance tracking for recognised vs. manual values
 * Confidence downgrade when normalisation fails

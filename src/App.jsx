@@ -2,9 +2,7 @@ import { useMemo, useState } from "react";
 import ScannerSheet from "./ScannerSheet.jsx";
 import SavedList from "./SavedList.jsx";
 import { normalizeDate, normalizeCode, PART_NUMBER_RE, SA_NUMBER_RE } from "./lib/normalize.js";
-import { downscale, buildFilename, photoId, saveToDevice, shareFile } from "./lib/camera.js";
-
-const fmtKB = (n) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(2)} MB` : `${Math.round(n / 1024)} KB`);
+import { downscale, photoId } from "./lib/camera.js";
 
 /* ------------------------------------------------------------------
    Schema rút từ nhãn thật trong kho (xem thư mục samples/).
@@ -215,7 +213,6 @@ export default function App() {
   const [toast, setToast] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const [reading, setReading] = useState(false);
-  const [autoSave, setAutoSave] = useState(true);
 
   const errors = useMemo(() => {
     const e = {};
@@ -280,32 +277,18 @@ export default function App() {
     setShowOptional(true);
   }
 
-  /* `shot` là ảnh gốc ImageCapture chưa nén. Lưu nguyên bản vào máy,
-   * còn bản thu nhỏ dùng để hiển thị và gửi OCR. */
+  /* `shot` là ảnh gốc ImageCapture chưa nén; bản thu nhỏ dùng để hiển thị và gửi OCR. */
   async function handlePhoto(shot) {
     if (photo?.url) URL.revokeObjectURL(photo.url);
 
     const at = new Date();
-    const filename = buildFilename(shot, at);
-    if (autoSave) saveToDevice(shot.blob, filename);
 
     const small = await downscale(shot.blob);
     setPhoto({
       ...small,
       id: photoId(at),
-      original: {
-        blob: shot.blob,
-        filename,
-        width: shot.width,
-        height: shot.height,
-        bytes: shot.blob.size,
-        ms: shot.ms,
-      },
+      original: { blob: shot.blob, width: shot.width, height: shot.height },
     });
-    if (autoSave) {
-      setToast(`Đã lưu ${filename}`);
-      setTimeout(() => setToast(""), 2600);
-    }
     recognize(small); // chụp xong là đọc luôn
   }
 
@@ -374,55 +357,6 @@ export default function App() {
                   {photo ? "Chụp lại" : "Mở camera"}
                 </button>
               </div>
-            </section>
-
-            <section className="testbench">
-              <label className="check">
-                <input type="checkbox" checked={autoSave} onChange={(e) => setAutoSave(e.target.checked)} />
-                Tự lưu ảnh gốc vào máy sau khi chụp
-              </label>
-
-              {photo?.original && (
-                <dl className="shotinfo">
-                  <div>
-                    <dt>Ảnh gốc</dt>
-                    <dd className="mono">
-                      {photo.original.width}×{photo.original.height} · {fmtKB(photo.original.bytes)}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Thời gian chụp</dt>
-                    <dd className="mono">{photo.original.ms} ms</dd>
-                  </div>
-                  <div>
-                    <dt>Bản gửi OCR</dt>
-                    <dd className="mono">
-                      {photo.width}×{photo.height} · {fmtKB(photo.blob.size)}
-                    </dd>
-                  </div>
-                  <div className="full">
-                    <dt>Tên file</dt>
-                    <dd className="mono small">{photo.original.filename}</dd>
-                  </div>
-                  <div className="actions">
-                    <button className="btn small" onClick={() => saveToDevice(photo.original.blob, photo.original.filename)}>
-                      Tải lại ảnh gốc
-                    </button>
-                    <button
-                      className="btn small"
-                      onClick={async () => {
-                        const ok = await shareFile(photo.original.blob, photo.original.filename);
-                        if (!ok) {
-                          setToast("Máy không hỗ trợ chia sẻ file — dùng Tải lại ảnh gốc");
-                          setTimeout(() => setToast(""), 2600);
-                        }
-                      }}
-                    >
-                      Lưu vào Thư viện ảnh
-                    </button>
-                  </div>
-                </dl>
-              )}
             </section>
 
             <div className="legend">
